@@ -3,6 +3,7 @@
 //! ModelRunner and prepare own execution policy, capture, workspaces and input binding.
 
 use super::backend::DeviceBuffer as CudaBuffer;
+use crate::pi05::trace_names;
 use apxinf_core::{Error, Result, Tensor};
 use blocks::Blocks;
 
@@ -134,6 +135,7 @@ impl<B: Blocks> Pi05Model<B> {
         }
         let mut state = noise.clone();
         let dt = -config.flow_start_time / config.num_flow_steps as f32;
+        let _denoise_range = crate::profiling::trace::range(&trace_names::denoise(config));
         for modulation in modulation {
             state = self
                 .blocks
@@ -183,6 +185,13 @@ impl<B: Blocks> Pi05Model<B> {
         embeddings: &[Tensor],
         native: bool,
     ) -> Result<Tensor> {
+        let config = self.blocks.config();
+        let prefix_tokens = config.num_views * config.patches_per_view() + count;
+        let _range = crate::profiling::trace::range(&trace_names::full_forward(
+            config,
+            self.blocks.precision_label(),
+            prefix_tokens,
+        ));
         let modulation = self.blocks.eager_modulation(embeddings)?;
         let vision = self.blocks.vision(patches, native)?;
         let prefix = self.blocks.embed_prefix(&vision, ids, count)?;

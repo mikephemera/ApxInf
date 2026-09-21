@@ -935,6 +935,9 @@ pub(in crate::pi05::model) mod backbone {
         fn config(&self) -> &Pi05Config {
             &self.config
         }
+        fn precision_label(&self) -> &'static str {
+            "fp8_static"
+        }
         fn vision(&self, patches: &Tensor, native: bool) -> Result<Tensor> {
             if native {
                 self.encode_vision_fp8_patches(patches)

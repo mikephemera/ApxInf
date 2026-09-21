@@ -24,6 +24,11 @@ pub trait Blocks {
     /// derived from the time conditioning rather than the request observation.
     type StepModulation;
     fn config(&self) -> &Pi05Config;
+    /// Pretty label for the `precision=` field of stage-level trace ranges. The
+    /// schedule emits those generically, so the precision has to come from the Block.
+    fn precision_label(&self) -> &'static str {
+        "unknown"
+    }
     /// `native` denotes the Block's already materialized input representation.
     fn vision(&self, patches: &Tensor, native: bool) -> Result<Tensor>;
     fn embed_prefix(&self, vision: &Tensor, ids: &DeviceBuffer, count: usize) -> Result<Tensor>;

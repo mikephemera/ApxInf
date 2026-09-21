@@ -498,6 +498,9 @@ pub(in crate::pi05::model) mod backbone {
         fn config(&self) -> &Pi05Config {
             &self.config
         }
+        fn precision_label(&self) -> &'static str {
+            "int8_dynamic"
+        }
         fn vision(&self, patches: &Tensor, native: bool) -> Result<Tensor> {
             let _ = native;
             self.encode_vision(patches)

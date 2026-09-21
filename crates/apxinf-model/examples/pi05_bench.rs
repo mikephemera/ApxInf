@@ -25,7 +25,25 @@
 //! nsys: set `APXINF_PI05_PROFILE_REPLAY=1` to wrap exactly one steady-state
 //! graph replay in an NVTX range under the CUDA profiler API, e.g.
 //!   nsys profile --capture-range=cudaProfilerApi --capture-range-end=stop ...
-//! `APXINF_PI05_EAGER_ONLY=1` stops after the eager integrity pass, and
+//!
+//! The graph is one `cudaGraphLaunch`, so it carries no usable per-stage NVTX
+//! labels. For stage/layer attribution instead profile the labeled non-graph
+//! pass, which the π0.5 runtimes label with `Pi05.vision*` / `Pi05.encoder*` /
+//! `Pi05.decoder*` ranges. `APXINF_PI05_NO_GRAPH=1` skips capture/replay entirely
+//! and bounds that pass to N warmup iterations (`APXINF_PI05_NO_GRAPH_WARMUP`,
+//! default 3) plus M profiled inferences (`APXINF_PI05_NO_GRAPH_PROFILE`,
+//! default 1, each in its own NVTX range):
+//!   APXINF_PI05_NO_GRAPH=1 nsys profile --trace=cuda,nvtx,osrt \
+//!     --capture-range=cudaProfilerApi --capture-range-end=stop ... \
+//!     pi05_bench random --model-variant bf16 --image-input nhwc
+//! The warmup iterations keep module loading, cuBLAS handle setup and workspace
+//! allocation out of the profiled window — without them the first `full_forward`
+//! and the first layer of each tower absorb one-time costs and skew per-layer
+//! attribution. No-graph timings still include per-op launch overhead and are for
+//! attribution only — keep the `APXINF_PI05_PROFILE_REPLAY`/graph path as the
+//! latency baseline. Because capture is skipped, the eager/graph agreement check
+//! does not run under `APXINF_PI05_NO_GRAPH`.
+//!
 //! `APXINF_PI05_IMAGE_INPUT` mirrors `--image-input` for scripted runs.
 
 use apxinf_model::pi05::{build_bf16_model, build_fp8_static_model, build_int8_dynamic_model};
@@ -261,6 +279,16 @@ impl ImageInput {
             Self::Rgb(Pi05ImageLayout::Nchw) => "rgb_u8_nchw",
         }
     }
+}
+
+/// Reads a `usize` env override, falling back to `default` when unset or
+/// unparseable. Env vars here are convenience switches for scripted runs and
+/// never block the benchmark — same contract as `ImageInput::resolve`.
+fn env_usize(name: &str, default: usize) -> usize {
+    std::env::var(name)
+        .ok()
+        .and_then(|value| value.parse().ok())
+        .unwrap_or(default)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -1020,6 +1048,61 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         BenchVariant::Int8Dynamic => upload_time_embeddings_int8_dynamic(&config, &*backend)?,
     };
 
+    // No-graph mode: skip capture/replay, run N warmup iterations, then M profiled
+    // inferences. Mirrors APXINF_NO_GRAPH in llama/decode_graph.rs — it exists so
+    // nsys sees every per-op kernel, and skipping capture means the eager/graph
+    // agreement check below does not run. Profiling-only: the timings here carry
+    // per-op launch overhead and are never a latency baseline.
+    if std::env::var_os("APXINF_PI05_NO_GRAPH").is_some() {
+        let warmup = env_usize("APXINF_PI05_NO_GRAPH_WARMUP", 3);
+        // At least one profiled iteration: a zero-length capture window would
+        // produce a trace with no kernels at all.
+        let profile_iters = env_usize("APXINF_PI05_NO_GRAPH_PROFILE", 1).max(1);
+        eprintln!(
+            "no-graph mode: {warmup} warmup iters, then {profile_iters} profiled inference(s)..."
+        );
+        // Warmup must precede profiler::start(): module loading, cuBLAS handle
+        // setup and first workspace allocation would otherwise land inside the
+        // Pi05.pipeline.full_forward / first-layer ranges and skew attribution.
+        for _ in 0..warmup {
+            bench.infer(&patches, &token_ids, token_count, &noise, &time_embeddings)?;
+        }
+        apxinf_cuda::profiler::start().map_err(std::io::Error::other)?;
+        // A range per iteration, so the trace carries `profile_iters` sibling
+        // ranges. Keeping one name for all of them lets `nvtx_pushpop_sum` report
+        // Count=profile_iters with the spread, which is what makes run-to-run
+        // variance visible. Only `infer` sits inside the window — the D2H copy and
+        // checksum happen after profiler::stop() so they never appear in the trace.
+        let mut outputs = Vec::with_capacity(profile_iters);
+        for _ in 0..profile_iters {
+            let output = {
+                let _range = apxinf_cuda::nvtx::range("Pi05.pipeline.no_graph_integrity");
+                bench.infer(&patches, &token_ids, token_count, &noise, &time_embeddings)
+            };
+            outputs.push(output);
+        }
+        apxinf_cuda::profiler::stop().map_err(std::io::Error::other)?;
+        let mut checksums = Vec::with_capacity(profile_iters);
+        for output in outputs {
+            let output = output?;
+            let values = backend.to_cpu(&output)?.to_f32_vec()?;
+            drop(output);
+            checksums.push(values.iter().map(|value| value.abs() as f64).sum::<f64>());
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "model_variant": model_variant.variant_label(),
+                "mode": "no_graph",
+                "warmup": warmup,
+                "profile_iters": profile_iters,
+                "token_count": token_count,
+                "output_abs_checksum": checksums,
+            }))?
+        );
+        return Ok(());
+    }
+
     eprintln!(
         "running eager {} integrity pass...",
         model_variant.variant_label()
@@ -1027,20 +1110,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let eager_output = bench.infer(&patches, &token_ids, token_count, &noise, &time_embeddings)?;
     let eager = backend.to_cpu(&eager_output)?.to_f32_vec()?;
     drop(eager_output);
-
-    if std::env::var_os("APXINF_PI05_EAGER_ONLY").is_some() {
-        let checksum = eager.iter().map(|value| value.abs() as f64).sum::<f64>();
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "model_variant": model_variant.variant_label(),
-                "mode": "eager_only",
-                "token_count": token_count,
-                "output_abs_checksum": checksum,
-            }))?
-        );
-        return Ok(());
-    }
 
     eprintln!(
         "capturing {} graph with {} input...",

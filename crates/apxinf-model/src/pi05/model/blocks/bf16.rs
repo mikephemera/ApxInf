@@ -233,6 +233,7 @@ pub(in crate::pi05::model) mod backbone {
     use crate::pi05::backend::{kernels, Context, DeviceBuffer as CudaBuffer, RuntimeBackend};
     use crate::pi05::weights::*;
     use crate::pi05::Pi05Config;
+    use crate::pi05::trace_names;
     use apxinf_core::{DType, Error, Result, Tensor};
     use kernels::{activation, cache, elementwise, embedding, gemm, norm};
     use std::sync::Arc;
@@ -243,6 +244,11 @@ pub(in crate::pi05::model) mod backbone {
     }
 
     pub struct Bf16StepModulation {
+        /// Index of the flow-matching step this set was prepared for. Carried
+        /// here so the per-step NVTX label can name a truthful `step_NN`: the
+        /// denoise loop that owns the counter is precision-generic and cannot
+        /// see inside `StepModulation`.
+        step: usize,
         attention: Vec<Tensor>,
         mlp: Vec<Tensor>,
         final_norm: Tensor,
@@ -251,6 +257,8 @@ pub(in crate::pi05::model) mod backbone {
         pub(in crate::pi05::model) backend: Arc<RuntimeBackend>,
         pub(in crate::pi05::model) config: Arc<Pi05Config>,
         pub(in crate::pi05::model) weights: Arc<Bf16Weights>,
+        /// Vision-tower range names, fixed once the config is known.
+        names: trace_names::Bf16TraceNames,
     }
     impl Bf16Blocks {
         pub fn new(
@@ -267,10 +275,12 @@ pub(in crate::pi05::model) mod backbone {
                     "π0.5 BF16 device weight depth mismatch".into(),
                 ));
             }
+            let names = trace_names::Bf16TraceNames::new(&config);
             Ok(Self {
                 backend,
                 config,
                 weights,
+                names,
             })
         }
 
@@ -285,6 +295,7 @@ pub(in crate::pi05::model) mod backbone {
                     got: patches.dtype(),
                 });
             }
+            let _range = crate::profiling::trace::range(&self.names.vision);
             let mut hidden = vision_patch_embed_bf16(
                 self.ctx(),
                 &self.weights.patch_embedding,
@@ -292,7 +303,8 @@ pub(in crate::pi05::model) mod backbone {
                 patches,
                 self.config.patches_per_view(),
             )?;
-            for layer in &self.weights.vision_layers {
+            for (index, layer) in self.weights.vision_layers.iter().enumerate() {
+                let _layer_range = crate::profiling::trace::range(&self.names.vision_layers[index]);
                 hidden = vision_layer_bf16(
                     self.ctx(),
                     layer,
@@ -334,6 +346,7 @@ pub(in crate::pi05::model) mod backbone {
                     self.config.max_token_len
                 )));
             }
+            let _range = crate::profiling::trace::range(&trace_names::embed(&self.config, token_count));
             let language = embedding::lookup_bf16(
                 self.ctx(),
                 &self.weights.token_embedding,
@@ -344,10 +357,18 @@ pub(in crate::pi05::model) mod backbone {
         }
 
         pub fn prefix_forward(&self, prefix: &Tensor) -> Result<Bf16PrefixKvCache> {
+            let prefix_tokens = prefix.shape().dims()[0];
+            let _range =
+                crate::profiling::trace::range(&trace_names::prefix(&self.config, prefix_tokens));
             let mut hidden = prefix.clone();
             let mut keys = Vec::with_capacity(self.config.language.depth);
             let mut values = Vec::with_capacity(self.config.language.depth);
             for (index, layer) in self.weights.language_layers.iter().enumerate() {
+                let _layer_range = crate::profiling::trace::range(&trace_names::encoder_layer(
+                    &self.config,
+                    index,
+                    prefix_tokens,
+                ));
                 let output = language_layer_bf16(
                     self.ctx(),
                     self.config.language,
@@ -395,7 +416,11 @@ pub(in crate::pi05::model) mod backbone {
             modulation.reshape(vec![modulation.numel()])
         }
 
-        fn prepare_step_modulation(&self, time_embedding: &Tensor) -> Result<Bf16StepModulation> {
+        fn prepare_step_modulation(
+            &self,
+            step: usize,
+            time_embedding: &Tensor,
+        ) -> Result<Bf16StepModulation> {
             let conditioning = self.conditioning(time_embedding)?;
             let mut attention = Vec::with_capacity(self.config.action_expert.depth);
             let mut mlp = Vec::with_capacity(self.config.action_expert.depth);
@@ -406,6 +431,7 @@ pub(in crate::pi05::model) mod backbone {
             let final_norm =
                 self.modulation(&conditioning, &self.weights.action_final_modulation)?;
             Ok(Bf16StepModulation {
+                step,
                 attention,
                 mlp,
                 final_norm,
@@ -425,7 +451,8 @@ pub(in crate::pi05::model) mod backbone {
             }
             time_embeddings
                 .iter()
-                .map(|embedding| self.prepare_step_modulation(embedding))
+                .enumerate()
+                .map(|(step, embedding)| self.prepare_step_modulation(step, embedding))
                 .collect()
         }
 
@@ -445,12 +472,28 @@ pub(in crate::pi05::model) mod backbone {
                     "π0.5 BF16 prefix/modulation depth mismatch".into(),
                 ));
             }
+            if modulation.step >= self.config.num_flow_steps {
+                return Err(Error::Other(format!(
+                    "π0.5 BF16 denoise step {} out of range",
+                    modulation.step
+                )));
+            }
+            let _step_range = crate::profiling::trace::range(&trace_names::decoder_step(
+                &self.config,
+                modulation.step,
+                prefix.tokens,
+            ));
             let hidden = gemm::bf16(self.ctx(), state, &self.weights.action_in.weight)?;
             let mut hidden =
                 elementwise::bias_bf16(self.ctx(), &hidden, self.weights.action_in.bias.as_ref())?;
             let mut attention_normalized = None;
-            for index in 0..self.config.action_expert.depth {
-                let layer = &self.weights.action_layers[index];
+            for (index, layer) in self.weights.action_layers.iter().enumerate() {
+                let _layer_range = crate::profiling::trace::range(&trace_names::decoder_layer(
+                    &self.config,
+                    modulation.step,
+                    index,
+                    prefix.tokens,
+                ));
                 let next_norm_modulation = if index + 1 < self.config.action_expert.depth {
                     &modulation.attention[index + 1]
                 } else {
@@ -486,6 +529,8 @@ pub(in crate::pi05::model) mod backbone {
             elementwise::euler_update_bf16(self.ctx(), state, &velocity, dt)
         }
 
+        /// Convenience single-step entry point. The NVTX labels it emits are
+        /// nominal (`step_00`): the real flow-matching loop passes the true index.
         pub fn denoise_step(
             &self,
             state: &Tensor,
@@ -493,7 +538,7 @@ pub(in crate::pi05::model) mod backbone {
             prefix: &Bf16PrefixKvCache,
             dt: f32,
         ) -> Result<Tensor> {
-            let modulation = self.prepare_step_modulation(time_embedding)?;
+            let modulation = self.prepare_step_modulation(0, time_embedding)?;
             self.denoise_step_with_modulation(state, &modulation, prefix, dt)
         }
     }
@@ -503,6 +548,9 @@ pub(in crate::pi05::model) mod backbone {
         type StepModulation = Bf16StepModulation;
         fn config(&self) -> &Pi05Config {
             &self.config
+        }
+        fn precision_label(&self) -> &'static str {
+            "bf16"
         }
         fn vision(&self, patches: &Tensor, native: bool) -> Result<Tensor> {
             let _ = native;
@@ -566,6 +614,10 @@ impl crate::pi05::model::PrepareBlocks for backbone::Bf16Blocks {
         patches: &Tensor,
         layout: crate::pi05::Pi05ImageLayout,
     ) -> Result<()> {
+        let _range = crate::profiling::trace::range(&format!(
+            "Pi05.vision.preprocess images=({},{},{},{}) layout={}",
+            self.config.num_views, 3, self.config.image_size, self.config.image_size, layout,
+        ));
         crate::pi05::backend::kernels::preprocess::rgb_u8_to_patches_bf16(
             self.backend.context(),
             images,
