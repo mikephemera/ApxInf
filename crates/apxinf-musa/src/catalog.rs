@@ -1,8 +1,9 @@
 //! The operator catalog: one entry per semantic the PI0.5 hot path needs.
 //!
 //! The list is derived from the engine, not invented. Each entry names the
-//! operation as the executor composes it (`crates/apxinf-model/src/pi05/
-//! bf16_executor.rs`) and the stage of `apxinf.pi05.stage-probe.v1` it feeds, so
+//! operation as the Blocks compose it
+//! (`crates/apxinf-model/src/pi05/model/blocks/bf16.rs`) and the stage of
+//! `apxinf.pi05.stage-probe.v1` it feeds, so
 //! that "this semantic is deferred" and "this stage has no MUSA number" are the
 //! same statement.
 //!
@@ -11,11 +12,16 @@
 //! `crates/apxinf-cuda-new/cuda-operator.md:76-82` states the rule this catalog
 //! obeys: a model that needs a semantic the L3 layer does not expose "must
 //! record an operator gap rather than infer support from the legacy
-//! implementation". The published CUDA L3 catalog carries only `gemm`,
-//! `gemm_bias`, `gemm_bias_gelu` and `gemm_geglu`. PI0.5 needs normalisation,
-//! attention, RoPE, embeddings, elementwise updates and six fused
-//! compositions, so almost everything below is a gap even on CUDA -- and on
-//! MUSA, where nothing has been ported, all of it is.
+//! implementation". What `apxinf-cuda-new` publishes as L3 is `ops::gemm`,
+//! `ops::gemm_bias`, `ops::gemm_bias_gelu`, `ops::gemm_geglu`, and -- since the
+//! attention adapter landed -- `ops::attention`, `ops::kv_cache_attention` and
+//! `ops::segmented_attention` (`crates/apxinf-cuda-new/src/ops/mod.rs:19-22`).
+//! Note that `cuda-operator.md:64-82` still lists only the four GEMM operators:
+//! the attention entries postdate that file, so read the Rust surface rather
+//! than the catalog file for what is published. PI0.5 still needs normalisation,
+//! RoPE, embeddings, elementwise updates and six fused compositions, so most of
+//! what is below remains a gap even on CUDA -- and on MUSA, where nothing has
+//! been ported, all of it is.
 //!
 //! # The fallback column
 //!
@@ -123,8 +129,8 @@ impl Semantic {
             Self::SplitQkvBias => "kernels::attention::split_qkv_bias_bf16",
             Self::SplitQkvApplyRope => "kernels::rope::split_qkv_apply_bf16",
             Self::ApplyQueryWriteKv => "kernels::rope::apply_q_write_kv_bf16",
-            Self::MultiHeadAttention => "kernels::attention::mha_bf16",
-            Self::MultiQueryAttention => "kernels::attention::mqa_bf16",
+            Self::MultiHeadAttention => "ops::attention (published L3)",
+            Self::MultiQueryAttention => "ops::kv_cache_attention (published L3)",
             Self::BiasResidual => "kernels::fused::bias_residual_bf16",
             Self::BiasResidualRmsNorm => "kernels::fused::bias_residual_rms_bf16",
             Self::BiasResidualLayerNorm => "kernels::fused::bias_residual_layer_bf16",

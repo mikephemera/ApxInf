@@ -96,7 +96,7 @@ class Pi05Config:
         Only the two-view profile reaches a token count where
         ``m > patch_tokens and m - patch_tokens <= max_token_len`` holds for the
         engine's dual-GeGLU packing, and the engine feeds that condition into
-        ``StaticBf16Pi05Weights::from_host``. The reference does not pack, but
+        ``Bf16Weights::from_host``. The reference does not pack, but
         the flag is recorded so a mismatch in the comparison is attributable.
         """
         return self.patch_tokens == 512

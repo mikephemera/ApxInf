@@ -1,7 +1,8 @@
 """Checkpoint loading for the reference runtime.
 
 The tensor names are the OpenPI PyTorch export's own names -- the same tree the
-engine reads, rooted at ``paligemma_with_expert`` (``weights.rs:16``). Nothing is
+engine reads, rooted at ``paligemma_with_expert``
+(``crates/apxinf-model/src/pi05/weights/host.rs:16``). Nothing is
 renamed or reshaped here: the engine transposes ``[out, in]`` into its row-major
 GEMM layout and folds Gemma's ``1 + gamma`` into the consuming weights, and both
 of those are *engine* representation choices. The reference deliberately keeps
@@ -18,7 +19,8 @@ from ...device import torch_module
 
 __all__ = ["ROOT", "Pi05Weights", "load_weights", "materialize_precision"]
 
-#: ``weights.rs:16`` -- the root every PaliGemma tensor sits under.
+#: ``crates/apxinf-model/src/pi05/weights/host.rs:16`` -- the root every
+#: PaliGemma tensor sits under.
 ROOT = "paligemma_with_expert"
 
 _WEIGHT_FILES = ("model.safetensors",)
@@ -135,7 +137,8 @@ def materialize_precision(weights: "Pi05Weights", precision: str) -> "Pi05Weight
 
 
 def _normalize_lerobot_prefix(tensors: dict) -> dict:
-    """Port of ``weights.rs:485-502`` ``normalize_lerobot_prefix``.
+    """Port of ``crates/apxinf-model/src/pi05/weights/host.rs:485``
+    ``normalize_lerobot_prefix``.
 
     A LeRobot export wraps the whole tree in ``model.``. The engine strips it
     only when no canonical key is present *and* at least one wrapped key is;

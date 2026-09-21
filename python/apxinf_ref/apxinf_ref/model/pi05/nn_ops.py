@@ -3,7 +3,9 @@
 These are ordinary functions, not a plug-in layer: there is no registry, no
 candidate list and no native slot. Their only organising idea is that each one
 should be recognisable as the reference semantics of exactly one operation the
-engine calls, so that reading this file beside ``bf16_executor.rs`` shows which
+engine calls, so that reading this file beside
+``crates/apxinf-model/src/pi05/model/blocks/{bf16,fp8_static,int8_dynamic}.rs``
+shows which
 number on the engine side corresponds to which expression here.
 
 The names follow the engine's ``kernels::{norm,gemm,rope,attention,fused,

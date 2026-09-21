@@ -288,10 +288,11 @@ _None._ The registry is empty; every semantic below resolves to `deferred`.
 ## Resolution
 
 `src/resolve.rs` walks the same admission chain the CUDA layer walks
-(`registry.cu:229-275`): device features, contract, alignment, graph safety,
-determinism, workspace budget. With an empty registry it stops at the first step
-and reports `no_candidate_registered`. Running the binary prints the full
-per-semantic report:
+(`adapters/gemm/candidates.cpp:250-295`, mirrored for attention at
+`adapters/attention/candidates.cpp:200-230`): device features, contract,
+alignment, graph safety, determinism, workspace budget. With an empty registry it
+stops at the first step and reports `no_candidate_registered`. Running the binary
+prints the full per-semantic report:
 
 ```sh
 cargo run --manifest-path crates/apxinf-musa/Cargo.toml --bin operator-gaps -- --token-count 10

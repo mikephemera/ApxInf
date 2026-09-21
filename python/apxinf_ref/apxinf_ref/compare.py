@@ -7,9 +7,18 @@ That is enough to localise a divergence to a stage, which is the question the
 tool exists to answer; it is not enough to explain one, so a stage that fails
 should be re-run with tensors kept.
 
-Thresholds come from ``pi05_bench.rs:87-108`` so that a stage verdict means the
-same thing here as it does in the engine's own bench: the same per-dtype cosine
-floor, relative-L2 ceiling and, for INT8, absolute ceiling.
+Thresholds come from ``crates/apxinf-model/examples/pi05_bench.rs:89-110`` so
+that a stage verdict means the same thing here as it does in the engine's own
+bench: the same per-dtype cosine floor, relative-L2 ceiling and, for INT8,
+absolute ceiling.
+
+Stage names are matched after stripping a *precision suffix*. The reference
+runtime is precision-agnostic and emits the bare name (``vision_patch_embed``);
+an engine probe may emit the precision-explicit one (``vision_patch_embed_fp8_static``),
+which is the naming the PI0.5 refactor moved to. The suffix says which
+implementation produced the tensor, not which stage it is, so it is not part of
+the stage's identity here. The match is reported in ``aliased_stages`` rather
+than performed silently.
 
 The bench's *other* gate -- ``EAGER_GRAPH_MIN_COSINE`` and its per-dtype
 ``eager_graph_max_abs`` -- is deliberately not here. That one compares two runs
@@ -26,9 +35,21 @@ from __future__ import annotations
 
 from typing import Any, Mapping
 
-__all__ = ["THRESHOLDS", "compare_documents", "render_table", "stage_metrics"]
+__all__ = [
+    "PRECISION_SUFFIXES",
+    "THRESHOLDS",
+    "compare_documents",
+    "normalize_stage_name",
+    "render_table",
+    "stage_metrics",
+]
 
-#: ``pi05_bench.rs:87-108`` ``Dtype::thresholds``.
+#: ``crates/apxinf-model/examples/pi05_bench.rs:89-110``
+#: ``BenchVariant::thresholds``.
+#:
+#: ``Dtype`` became ``BenchVariant`` in the PI0.5 refactor and its variants are
+#: now ``Bf16`` / ``Fp8Static`` / ``Int8Dynamic``; the values below did not move,
+#: and the CLI keeps the shorter ``bf16`` / ``fp8`` / ``int8`` keys.
 THRESHOLDS = {
     "bf16": {
         "min_cosine": 0.999,
@@ -46,6 +67,42 @@ THRESHOLDS = {
         "max_abs": 0.125,
     },
 }
+
+
+#: Precision suffixes the PI0.5 refactor added to stage and function names.
+#: ``doc/model-lifecycle/architecture.md`` records the migration as "unprefixed
+#: FP8 layer functions/types -> explicit fp8_static / Fp8Static names".
+PRECISION_SUFFIXES = ("_bf16", "_fp8_static", "_int8_dynamic")
+
+
+def normalize_stage_name(name: str) -> str:
+    """A stage's identity, with any precision suffix removed.
+
+    ``vision_patch_embed_fp8_static`` and ``vision_patch_embed`` are the same
+    stage computed by two different implementations, so a comparison between a
+    precision-agnostic reference document and a precision-explicit engine
+    document has to match them. Truncating is safe because no two stages in the
+    vocabulary differ only by such a suffix.
+    """
+    for suffix in PRECISION_SUFFIXES:
+        if name.endswith(suffix):
+            return name[: -len(suffix)]
+    return name
+
+
+def _by_stage_name(stages: Mapping[str, Any], side: str) -> dict:
+    """Index a document's stages by normalised name, refusing a collision."""
+    indexed: dict = {}
+    for name in stages:
+        key = normalize_stage_name(name)
+        if key in indexed:
+            raise ValueError(
+                f"{side} document holds two stages that differ only by a precision "
+                f"suffix: {indexed[key]!r} and {name!r}. Their signatures cannot be "
+                "told apart stage by stage."
+            )
+        indexed[key] = name
+    return indexed
 
 
 def _finite(values) -> bool:
@@ -182,16 +239,33 @@ def compare_documents(
     reference_stages = reference["intermediate_signatures"]
     candidate_stages = candidate["intermediate_signatures"]
 
-    stages = {}
-    missing_in_candidate = sorted(set(reference_stages) - set(candidate_stages))
-    missing_in_reference = sorted(set(candidate_stages) - set(reference_stages))
+    reference_by_name = _by_stage_name(reference_stages, "reference")
+    candidate_by_name = _by_stage_name(candidate_stages, "candidate")
 
-    for name in sorted(set(reference_stages) & set(candidate_stages)):
-        a, b = reference_stages[name], candidate_stages[name]
+    stages = {}
+    aliased_stages = {}
+    missing_in_candidate = sorted(
+        reference_by_name[key] for key in set(reference_by_name) - set(candidate_by_name)
+    )
+    missing_in_reference = sorted(
+        candidate_by_name[key] for key in set(candidate_by_name) - set(reference_by_name)
+    )
+
+    for name in sorted(set(reference_by_name) & set(candidate_by_name)):
+        reference_name = reference_by_name[name]
+        candidate_name = candidate_by_name[name]
+        a, b = reference_stages[reference_name], candidate_stages[candidate_name]
         entry: dict = {
             "elements_reference": int(a["elements"]),
             "elements_candidate": int(b["elements"]),
         }
+        if reference_name != candidate_name:
+            entry["stage_name_reference"] = reference_name
+            entry["stage_name_candidate"] = candidate_name
+            aliased_stages[name] = {
+                "reference": reference_name,
+                "candidate": candidate_name,
+            }
         if int(a["elements"]) != int(b["elements"]):
             entry["status"] = "structural"
             entry["diagnosis"] = _structural_diagnosis(name, a, b)
@@ -227,6 +301,7 @@ def compare_documents(
         "stages": stages,
         "failures": failures,
         "structural_stages": structural,
+        "aliased_stages": aliased_stages,
         "missing_in_candidate": missing_in_candidate,
         "missing_in_reference": missing_in_reference,
         "weakest_stages": worst,
@@ -263,6 +338,14 @@ def render_table(comparison: Mapping[str, Any], reference_name: str, candidate_n
         lines.append("")
         lines.append(f"[structural] {name}")
         lines.append("  " + comparison["stages"][name]["diagnosis"])
+
+    for name, pair in comparison["aliased_stages"].items():
+        lines.append("")
+        lines.append(
+            f"[aliased] {name}: reference {pair['reference']!r}, "
+            f"candidate {pair['candidate']!r} -- matched after stripping a "
+            "precision suffix."
+        )
 
     if comparison["missing_in_candidate"]:
         lines.append("")

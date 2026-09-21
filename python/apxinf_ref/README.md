@@ -108,7 +108,8 @@ That is enough to say *which* stage diverged and roughly how much. It is not
 enough to say why. A stage that fails should be re-run with tensors kept (the
 private workspace has scripts that do this).
 
-The threshold set is copied from `pi05_bench.rs:87-108` so a verdict means the
+The threshold set is copied from
+`crates/apxinf-model/examples/pi05_bench.rs:89-110` so a verdict means the
 same thing on both sides: per-dtype minimum cosine, maximum relative L2 and, for
 INT8, a maximum absolute error.
 
@@ -125,7 +126,8 @@ Runtime](../../doc/pi05-reference-runtime.md#the-probes-two-known-defects).
 Six things are pinned, because without them a comparison measures noise:
 
 1. **The fixture is zeros** by default — images, token ids and diffusion noise —
-   matching the engine's integrity probe. `pi05_bench.rs:627-632` rejects any
+   matching the engine's integrity probe.
+`crates/apxinf-model/examples/pi05_bench.rs:573-574` rejects any
    reference that declares anything else. `--fixture random` exists for
    self-validation only.
 2. **Attention is eager everywhere.** `transformers` defaults every tower to
@@ -196,14 +198,17 @@ including the parts that look like accidents and are not:
 ### Three pieces of model structure that must not be "cleaned up"
 
 * **The last language layer is truncated.** The engine passes
-  `compute_tail = index + 1 < depth` (`bf16_runtime.rs:291`) and the executor,
+  `compute_tail = index + 1 < depth`
+  (`crates/apxinf-model/src/pi05/model/blocks/bf16.rs:356`) and the executor,
   when it is false, returns the layer's input alongside the K/V it just wrote —
-  no attention, no output projection, no MLP (`bf16_executor.rs:47`). It saves
+  no attention, no output projection, no MLP
+  (`crates/apxinf-model/src/pi05/model/blocks/bf16.rs:47`). It saves
   work without changing any result, and `prefix_v_layer17` can therefore only
   ever validate the post-RoPE K/V of that layer, never its attention stack.
 * **Action layers reuse the previous layer's normalisation.** A layer's
   `next_normalized` is the next layer's `attention_normalized`
-  (`bf16_executor.rs:99-102`), so the normalisation is not recomputed.
+  (`crates/apxinf-model/src/pi05/model/blocks/bf16.rs:20`, consumed at `:475`),
+  so the normalisation is not recomputed.
 * **The checkpoint's float32 parameters are not a rounding detail.**
   `to_bfloat16_for_selected_params` matches parameter names as *substrings*, and
   `"input_layernorm"` / `"model.norm"` also match the action expert's adaRMS
@@ -223,8 +228,10 @@ All three are representation choices on the engine side, not errors:
   as `(1 / period) * 2 * pi`. Algebraically equal, differently associated in
   float64.
 * the engine folds Gemma's `1 + gamma` into the consuming projections
-  (`weights.rs:192-207`) and rounds the scale to bfloat16 on the way
-  (`add_one`, `weights.rs:566-581`); the upstream reference keeps the scale in
+  (`crates/apxinf-model/src/pi05/weights/host.rs:192-207`) and rounds the
+  scale to bfloat16 on the way (`add_one`,
+  `crates/apxinf-model/src/pi05/weights/host.rs:556`); the upstream reference
+  keeps the scale in
   float32 and multiplies the activation. **Measured cost: up to 1.0e-02 relative
   L2 on the prefix K/V**, zero on the vision tower (which has no `1 + gamma`).
   See `devlocal/pi05-ref-runtime/reports/anchor-fidelity.md`.

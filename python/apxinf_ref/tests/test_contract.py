@@ -22,7 +22,13 @@ from apxinf_ref import device as device_module
 from apxinf_ref import infer as infer_module
 from apxinf_ref import paths
 from apxinf_ref import probe, sources
-from apxinf_ref.compare import THRESHOLDS, compare_documents, stage_metrics
+from apxinf_ref.compare import (
+    PRECISION_SUFFIXES,
+    THRESHOLDS,
+    compare_documents,
+    normalize_stage_name,
+    stage_metrics,
+)
 from apxinf_ref.model.pi05 import preprocess
 from apxinf_ref.model.pi05.observation import ModelInputs, Observation
 
@@ -570,6 +576,75 @@ def test_a_token_count_mismatch_is_refused_rather_than_reported():
     candidate = a_document({"vision_layer_0": a_stage([1.0])}, token_count=21)
     with pytest.raises(ValueError, match="token counts differ"):
         compare_documents(reference, candidate)
+
+
+def test_a_precision_suffix_is_not_part_of_a_stage_identity():
+    """The two probes have to stay comparable after the PI0.5 rename.
+
+    ``python/apxinf_ref`` is precision-agnostic and emits the bare stage name.
+    ``examples/pi05_integrity_probe.rs`` emits ``vision_patch_embed_fp8_static``
+    for the same stage, which is the naming the PI0.5 refactor moved the engine
+    to. Matching on the raw name made every such comparison report both stages
+    missing instead of the two ``structural`` ones the runbook promises.
+    """
+    reference = a_document(
+        {
+            "vision_patch_embed": a_stage([1.0, 2.0]),
+            "denoise_step_0": a_stage([1.0, 2.0]),
+        }
+    )
+    candidate = a_document(
+        {
+            "vision_patch_embed_fp8_static": a_stage([1.0, 2.0]),
+            "denoise_step_0": a_stage([1.0, 2.0]),
+        }
+    )
+
+    comparison = compare_documents(reference, candidate)
+
+    assert comparison["missing_in_candidate"] == []
+    assert comparison["missing_in_reference"] == []
+    assert comparison["passed"], comparison["failures"]
+
+    renamed = comparison["stages"]["vision_patch_embed"]
+    assert renamed["status"] == "pass"
+    assert renamed["stage_name_reference"] == "vision_patch_embed"
+    assert renamed["stage_name_candidate"] == "vision_patch_embed_fp8_static"
+    assert comparison["aliased_stages"] == {
+        "vision_patch_embed": {
+            "reference": "vision_patch_embed",
+            "candidate": "vision_patch_embed_fp8_static",
+        }
+    }
+
+    # A stage whose names already agree carries no aliasing fields and is not
+    # listed, so the report does not cry wolf on an ordinary comparison.
+    untouched = comparison["stages"]["denoise_step_0"]
+    assert "stage_name_reference" not in untouched
+    assert "stage_name_candidate" not in untouched
+    assert "denoise_step_0" not in comparison["aliased_stages"]
+
+
+def test_names_that_differ_only_by_a_precision_suffix_are_refused():
+    """One document cannot hold the same stage twice under two names."""
+    both = a_document(
+        {
+            "vision_patch_embed": a_stage([1.0]),
+            "vision_patch_embed_fp8_static": a_stage([1.0]),
+        }
+    )
+    with pytest.raises(ValueError, match="differ only by a precision suffix"):
+        compare_documents(both, a_document({"vision_patch_embed": a_stage([1.0])}))
+
+
+def test_normalize_stage_name_strips_only_the_declared_suffixes():
+    # The vocabulary is closed on purpose: a suffix this module does not know is
+    # part of the name, not something to guess away.
+    for suffix in PRECISION_SUFFIXES:
+        assert normalize_stage_name("vision_layer_3" + suffix) == "vision_layer_3"
+    assert normalize_stage_name("vision_layer_3") == "vision_layer_3"
+    assert normalize_stage_name("prefix_v_layer17") == "prefix_v_layer17"
+    assert normalize_stage_name("vision_layer_3_fp16") == "vision_layer_3_fp16"
 
 
 # --- the observation path --------------------------------------------------

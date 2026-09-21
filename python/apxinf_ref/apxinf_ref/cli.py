@@ -42,7 +42,8 @@ def _inputs(config, device, *, seed: int, token_count: int, fixture: str = "zero
     """The deterministic fixture.
 
     ``zeros`` is the default and the only one usable against the engine:
-    ``pi05_bench.rs:627-632`` rejects any reference whose ``normalized_images``,
+    ``crates/apxinf-model/examples/pi05_bench.rs:573-574`` rejects any
+    reference whose ``normalized_images``,
     ``token_ids`` and ``diffusion_noise`` are not all ``zeros``, and the engine's
     own integrity probe feeds zeros. ``random`` exists for self-validation -- a
     zero fixture drives every stage to zero and would hide a great deal.

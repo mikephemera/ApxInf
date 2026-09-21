@@ -6,7 +6,7 @@
 //! requires regardless of speed. Mixing the two is how a tuning cache ends up
 //! keyed on a calibration scale value, which is why the CUDA layer keeps
 //! structural predicates here and scale *values* in the bindings
-//! (`crates/apxinf-cuda-new/native/include/apxinf_cuda/gemm_types.h:37`).
+//! (`crates/apxinf-cuda-new/native/include/apxinf_cuda/gemm_types.h:38`).
 
 /// The data type a stage is computed in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

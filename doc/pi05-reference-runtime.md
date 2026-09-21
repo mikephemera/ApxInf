@@ -297,7 +297,8 @@ document and still has them:
    the diagnosis, against an older document.
 2. **The step size did not match the runtime's.** The probe used
    `dt = -1.0 / num_flow_steps`; `denoise_all_steps` uses
-   `-flow_start_time / num_flow_steps` (`runtime.rs:598`). They agree while
+   `-flow_start_time / num_flow_steps`
+   (`crates/apxinf-model/src/pi05/model/mod.rs:136`). They agree while
    `flow_start_time` is 1.0 and diverge silently otherwise.
 
 ## Running it against the engine

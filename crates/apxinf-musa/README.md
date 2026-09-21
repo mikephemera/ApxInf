@@ -10,10 +10,10 @@ comes from `python/apxinf_ref`, the device-independent eager reference runtime.
 
 ## Why there is no fallback implementation here
 
-`doc/model-execution-wiring.md:84-88` is explicit that on an accelerator target a
-steady-state host scaffold "is not deliverable optimization debt: it remains
-unfinished implementation", and `doc/adding-new-kernels.md:45` requires that
-unsupported input "must never silently produce an incorrect result".
+`doc/model-execution-wiring.md:118-119` is explicit that on an accelerator
+target a steady-state host scaffold "remains unfinished implementation", and
+`doc/adding-new-kernels.md:45` requires that unsupported input "must never
+silently produce an incorrect result".
 
 A host-side reimplementation of the missing semantics would fail both: it would
 be a second transcription of the model to keep correct, and every stage it served
@@ -37,9 +37,9 @@ src/
 `src/spec.rs` keeps scale *values* out of `Spec` on purpose. `Spec` decides
 whether a candidate is admissible, so it holds shapes, dtypes and scale *kinds*;
 the numbers live in the bindings. The CUDA layer draws the same line
-(`crates/apxinf-cuda-new/native/include/apxinf_cuda/gemm_types.h:37`), and for the same
-reason: a tuning cache keyed on a calibration value fragments into one entry per
-calibration.
+(`crates/apxinf-cuda-new/native/include/apxinf_cuda/gemm_types.h:38`), and for
+the same reason: a tuning cache keyed on a calibration value fragments into one
+entry per calibration.
 
 ## Checking it
 

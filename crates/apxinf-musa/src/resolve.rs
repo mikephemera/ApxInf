@@ -1,7 +1,9 @@
 //! Which candidate serves a call, and what happens when none does.
 //!
 //! The admission chain is the CUDA layer's
-//! (`crates/apxinf-cuda-new/native/adapters/gemm/registry.cu:229-275`), in its
+//! (`crates/apxinf-cuda-new/native/adapters/gemm/candidates.cpp:250-295`; the
+//! attention adapter walks the same one at
+//! `adapters/attention/candidates.cpp:200-230`), in its
 //! order: device features, then the contract, then alignment, then the policy's
 //! graph-safety and determinism requirements, then the workspace budget. Each
 //! rejection is kept with its reason rather than collapsed into a bool, because

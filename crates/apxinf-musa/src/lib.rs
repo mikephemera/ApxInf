@@ -6,8 +6,8 @@
 //! decided and recorded. It follows the shape ApxInf already uses for CUDA
 //! operators -- a public L3 semantic, an internal candidate registry, and a
 //! resolution step that admits or rejects each candidate against a `Spec` and a
-//! `Policy` (`crates/apxinf-cuda-new/native/adapters/gemm/internal.h:97`, whose
-//! `Implementation` descriptor this mirrors).
+//! `Policy` (`crates/apxinf-cuda-new/native/adapters/gemm/internal.h:63-79`,
+//! whose `Implementation` descriptor this mirrors).
 //!
 //! # What this is not
 //!
@@ -18,9 +18,9 @@
 //! `apxinf.pi05.stage-probe.v1` comparison.
 //!
 //! A host-side reimplementation of the missing semantics was considered and
-//! rejected. `doc/model-execution-wiring.md:84-88` is explicit that on an
-//! accelerator target a steady-state host scaffold "is not deliverable
-//! optimization debt: it remains unfinished implementation", and a second
+//! rejected. `doc/model-execution-wiring.md:118-119` is explicit that on an
+//! accelerator target a steady-state host scaffold "remains unfinished
+//! implementation", and a second
 //! transcription of the model would be a second thing to keep correct. The
 //! reference runtime already answers "what is the right number"; this crate
 //! answers "which implementation produced it", and keeping those separate stops

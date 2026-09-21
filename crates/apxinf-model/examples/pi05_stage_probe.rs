@@ -1,8 +1,8 @@
 //! Per-stage numerical probe for PI0.5, in the precision the target needs.
 //!
 //! This example intentionally bypasses the unified `AutoModel`/`infer` frontend
-//! to reach the per-precision runtimes and the model-neutral kernel signatures
-//! directly, which the model abstraction does not (and should not) expose. See
+//! to reach the per-precision models and the stage-level kernel signatures
+//! directly, which the frontend does not (and should not) expose. See
 //! `pi05_auto_smoke` for the abstraction-level entry point.
 //!
 //! It emits `apxinf.pi05.stage-probe.v1`, the same document
@@ -17,9 +17,9 @@
 //! # Why this file exists next to `pi05_integrity_probe`
 //!
 //! `pi05_integrity_probe` is the older, FP8-only, positional-argument form of
-//! this probe. It emits the same document with the same stage names, so a
-//! comparison against it is still meaningful, but it carries two defects that
-//! were found by building the reference runtime and are fixed only here:
+//! this probe. It emits the same document, so a comparison against it is still
+//! meaningful, but it carries two defects that were found by building the
+//! reference runtime and are fixed only here:
 //!
 //! * its `prefix_v_layer*` signature covers `prefix_rows + action_horizon` rows
 //!   and `cache::reserve_prefix_bf16`
@@ -28,13 +28,21 @@
 //!   not reproducible even between two runs. This file signs only written rows
 //!   (`device_row_signature`);
 //! * it hard-codes `dt = -1.0 / num_flow_steps` where `denoise_all_steps` uses
-//!   `-flow_start_time / num_flow_steps` (`runtime.rs`). The two agree while
+//!   `-flow_start_time / num_flow_steps`
+//!   (`crates/apxinf-model/src/pi05/model/mod.rs`). The two agree while
 //!   `flow_start_time` is 1.0 and diverge silently otherwise.
 //!
 //! Keeping this probe in its own file rather than editing that one is
 //! deliberate: the older file is also maintained on the main branch, and a
 //! shared file that both branches rewrite is a merge conflict waiting to
 //! happen. Prefer this one. See `doc/pi05-reference-runtime.md`.
+//!
+//! For the same reason this file does not chase that one's stage names. The
+//! PI0.5 refactor renamed its `vision_patch_embed` key to
+//! `vision_patch_embed_fp8_static`; this probe keeps the bare name the reference
+//! runtime emits, and `compare.py` matches the two by stripping the precision
+//! suffix and reporting the pair under `aliased_stages`. That keeps the naming
+//! migration on the branch that owns it.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -42,13 +50,14 @@ use std::sync::Arc;
 use apxinf_core::{Backend, DType, Tensor};
 use apxinf_cuda::{CudaBackend, CudaBuffer};
 use apxinf_model::pi05::{
-    checkpoint_identity, upload_time_embeddings, upload_time_embeddings_bf16,
-    upload_time_embeddings_int8, vision_layer, vision_layer_bf16, vision_layer_int8,
-    vision_patch_embed, vision_patch_embed_bf16, vision_patch_embed_int8,
-    vision_qkv_packed_from_env, Bf16PrefixKvCache, Int8PrefixKvCache, Pi05ActivationScales,
-    Pi05Bf16CudaRuntime, Pi05Config, Pi05CudaRuntime, Pi05Int8CudaRuntime, Pi05Weights,
-    PrefixKvCache, StaticBf16Pi05Weights, StaticFp8Calibration, StaticFp8Pi05Weights,
-    StaticInt8Pi05Weights,
+    build_bf16_model, build_fp8_static_model, build_int8_dynamic_model, checkpoint_identity,
+    upload_time_embeddings_bf16, upload_time_embeddings_fp8_static,
+    upload_time_embeddings_int8_dynamic, vision_layer_bf16, vision_layer_fp8_static,
+    vision_layer_int8_dynamic, vision_patch_embed_bf16, vision_patch_embed_fp8_static,
+    vision_patch_embed_int8_dynamic, vision_qkv_packed_from_env, Bf16Model, Bf16PrefixKvCache,
+    Bf16Weights, Fp8StaticActivationScales, Fp8StaticCalibration, Fp8StaticModel,
+    Fp8StaticPrefixKvCache, Fp8StaticWeights, Int8DynamicModel, Int8DynamicPrefixKvCache,
+    Int8DynamicWeights, Pi05Config, Pi05Weights,
 };
 
 fn signature(values: &[f32]) -> serde_json::Value {
@@ -150,35 +159,39 @@ impl Precision {
     }
 }
 
-/// The per-precision runtime plus the state the probe drives it with.
+/// The per-precision model plus the state the probe drives it with.
 ///
 /// Every arm exposes the same layer-level calls, so the probing loop below is
 /// written once. This mirrors `pi05_bench`'s `Bench` enum, which exists for the
 /// same reason on the inference surface.
+///
+/// The device weights stay here rather than being read back off the model: the
+/// stage-level functions take them directly, and the model does not expose the
+/// blocks it was built from.
 enum ProbeRuntime {
     Bf16 {
-        runtime: Pi05Bf16CudaRuntime,
-        weights: Arc<StaticBf16Pi05Weights>,
+        model: Bf16Model,
+        weights: Arc<Bf16Weights>,
         time_embeddings: Vec<Tensor>,
     },
     Fp8 {
-        runtime: Pi05CudaRuntime,
-        weights: Arc<StaticFp8Pi05Weights>,
-        scales: Arc<Pi05ActivationScales>,
+        model: Fp8StaticModel,
+        weights: Arc<Fp8StaticWeights>,
+        scales: Arc<Fp8StaticActivationScales>,
         time_embeddings: Vec<Tensor>,
     },
     Int8 {
-        runtime: Pi05Int8CudaRuntime,
-        weights: Arc<StaticInt8Pi05Weights>,
+        model: Int8DynamicModel,
+        weights: Arc<Int8DynamicWeights>,
         time_embeddings: Vec<Tensor>,
     },
 }
 
-/// The three runtimes return differently-typed K/V caches with the same content.
+/// The three precisions return differently-typed K/V caches with the same content.
 enum ProbePrefix {
     Bf16(Bf16PrefixKvCache),
-    Fp8(PrefixKvCache),
-    Int8(Int8PrefixKvCache),
+    Fp8(Fp8StaticPrefixKvCache),
+    Int8(Int8DynamicPrefixKvCache),
 }
 
 impl ProbePrefix {
@@ -219,7 +232,7 @@ impl ProbeRuntime {
                 patches,
                 patches_per_view,
             )?,
-            Self::Fp8 { weights, scales, .. } => vision_patch_embed(
+            Self::Fp8 { weights, scales, .. } => vision_patch_embed_fp8_static(
                 ctx.backend.context(),
                 &weights.patch_embedding,
                 &weights.position_embedding,
@@ -227,7 +240,7 @@ impl ProbeRuntime {
                 patches_per_view,
                 scales.vision_patch_input,
             )?,
-            Self::Int8 { weights, .. } => vision_patch_embed_int8(
+            Self::Int8 { weights, .. } => vision_patch_embed_int8_dynamic(
                 ctx.backend.context(),
                 &weights.patch_embedding,
                 &weights.position_embedding,
@@ -255,7 +268,7 @@ impl ProbeRuntime {
                 config.vision_head_dim,
                 config.layer_norm_eps,
             )?,
-            Self::Fp8 { weights, scales, .. } => vision_layer(
+            Self::Fp8 { weights, scales, .. } => vision_layer_fp8_static(
                 ctx.backend.context(),
                 &weights.vision_layers[index],
                 scales.vision_layers[index],
@@ -266,7 +279,7 @@ impl ProbeRuntime {
                 packed_qkv,
                 config.layer_norm_eps,
             )?,
-            Self::Int8 { weights, .. } => vision_layer_int8(
+            Self::Int8 { weights, .. } => vision_layer_int8_dynamic(
                 ctx.backend.context(),
                 &weights.vision_layers[index],
                 hidden,
@@ -283,9 +296,9 @@ impl ProbeRuntime {
         patches: &Tensor,
     ) -> Result<Tensor, Box<dyn std::error::Error>> {
         Ok(match self {
-            Self::Bf16 { runtime, .. } => runtime.encode_vision(patches)?,
-            Self::Fp8 { runtime, .. } => runtime.encode_vision(patches)?,
-            Self::Int8 { runtime, .. } => runtime.encode_vision(patches)?,
+            Self::Bf16 { model, .. } => model.encode_vision(patches)?,
+            Self::Fp8 { model, .. } => model.encode_vision(patches)?,
+            Self::Int8 { model, .. } => model.encode_vision(patches)?,
         })
     }
 
@@ -296,14 +309,14 @@ impl ProbeRuntime {
         token_count: usize,
     ) -> Result<Tensor, Box<dyn std::error::Error>> {
         Ok(match self {
-            Self::Bf16 { runtime, .. } => {
-                runtime.embed_prefix(vision_tokens, token_ids, token_count)?
+            Self::Bf16 { model, .. } => {
+                model.embed_prefix(vision_tokens, token_ids, token_count)?
             }
-            Self::Fp8 { runtime, .. } => {
-                runtime.embed_prefix(vision_tokens, token_ids, token_count)?
+            Self::Fp8 { model, .. } => {
+                model.embed_prefix(vision_tokens, token_ids, token_count)?
             }
-            Self::Int8 { runtime, .. } => {
-                runtime.embed_prefix(vision_tokens, token_ids, token_count)?
+            Self::Int8 { model, .. } => {
+                model.embed_prefix(vision_tokens, token_ids, token_count)?
             }
         })
     }
@@ -313,9 +326,9 @@ impl ProbeRuntime {
         prefix: &Tensor,
     ) -> Result<ProbePrefix, Box<dyn std::error::Error>> {
         Ok(match self {
-            Self::Bf16 { runtime, .. } => ProbePrefix::Bf16(runtime.prefix_forward(prefix)?),
-            Self::Fp8 { runtime, .. } => ProbePrefix::Fp8(runtime.prefix_forward(prefix)?),
-            Self::Int8 { runtime, .. } => ProbePrefix::Int8(runtime.prefix_forward(prefix)?),
+            Self::Bf16 { model, .. } => ProbePrefix::Bf16(model.prefix_forward(prefix)?),
+            Self::Fp8 { model, .. } => ProbePrefix::Fp8(model.prefix_forward(prefix)?),
+            Self::Int8 { model, .. } => ProbePrefix::Int8(model.prefix_forward(prefix)?),
         })
     }
 
@@ -327,14 +340,14 @@ impl ProbeRuntime {
         dt: f32,
     ) -> Result<Tensor, Box<dyn std::error::Error>> {
         Ok(match (self, prefix) {
-            (Self::Bf16 { runtime, .. }, ProbePrefix::Bf16(cache)) => {
-                runtime.denoise_step(state, time_embedding, cache, dt)?
+            (Self::Bf16 { model, .. }, ProbePrefix::Bf16(cache)) => {
+                model.denoise_step(state, time_embedding, cache, dt)?
             }
-            (Self::Fp8 { runtime, .. }, ProbePrefix::Fp8(cache)) => {
-                runtime.denoise_step(state, time_embedding, cache, dt)?
+            (Self::Fp8 { model, .. }, ProbePrefix::Fp8(cache)) => {
+                model.denoise_step(state, time_embedding, cache, dt)?
             }
-            (Self::Int8 { runtime, .. }, ProbePrefix::Int8(cache)) => {
-                runtime.denoise_step(state, time_embedding, cache, dt)?
+            (Self::Int8 { model, .. }, ProbePrefix::Int8(cache)) => {
+                model.denoise_step(state, time_embedding, cache, dt)?
             }
             _ => {
                 return Err("probe runtime and prefix cache disagree on precision".into());
@@ -460,22 +473,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         config: config.clone(),
     };
 
-    let runtime = match precision {
+    let probe = match precision {
         Precision::Bf16 => {
             if calibration_path.is_some() {
                 eprintln!("note: --calibration is not used by the bf16 path");
             }
-            let weights = Arc::new(StaticBf16Pi05Weights::from_host(
+            let weights = Arc::new(Bf16Weights::from_host(
                 &host_weights,
                 &*backend,
                 config.language_dual_geglu_shape_possible(),
             )?);
             drop(host_weights);
             let time_embeddings = upload_time_embeddings_bf16(&config, &*backend)?;
-            let runtime =
-                Pi05Bf16CudaRuntime::new(backend.clone(), config.clone(), weights.clone())?;
+            let model = build_bf16_model(backend.clone(), config.clone(), weights.clone())?;
             ProbeRuntime::Bf16 {
-                runtime,
+                model,
                 weights,
                 time_embeddings,
             }
@@ -484,26 +496,25 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let path = calibration_path
                 .as_ref()
                 .ok_or("the fp8 path requires --calibration <json>")?;
-            let calibration =
-                StaticFp8Calibration::from_json_file(path, &config, &checkpoint)?;
-            let scales = Arc::new(Pi05ActivationScales::from_calibration(
+            let calibration = Fp8StaticCalibration::from_json_file(path, &config, &checkpoint)?;
+            let scales = Arc::new(Fp8StaticActivationScales::from_calibration(
                 &config, &calibration,
             )?);
-            let weights = Arc::new(StaticFp8Pi05Weights::from_host(
+            let weights = Arc::new(Fp8StaticWeights::from_host(
                 &host_weights,
                 &*backend,
                 config.language_dual_geglu_shape_possible(),
             )?);
             drop(host_weights);
-            let time_embeddings = upload_time_embeddings(&config, &*backend)?;
-            let runtime = Pi05CudaRuntime::new(
+            let time_embeddings = upload_time_embeddings_fp8_static(&config, &*backend)?;
+            let model = build_fp8_static_model(
                 backend.clone(),
                 config.clone(),
                 weights.clone(),
                 scales.clone(),
             )?;
             ProbeRuntime::Fp8 {
-                runtime,
+                model,
                 weights,
                 scales,
                 time_embeddings,
@@ -513,13 +524,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             if calibration_path.is_some() {
                 eprintln!("note: --calibration is not used by the int8 path");
             }
-            let weights = Arc::new(StaticInt8Pi05Weights::from_host(&host_weights, &backend)?);
+            let weights = Arc::new(Int8DynamicWeights::from_host(&host_weights, &*backend)?);
             drop(host_weights);
-            let time_embeddings = upload_time_embeddings_int8(&config, &*backend)?;
-            let runtime =
-                Pi05Int8CudaRuntime::new(backend.clone(), config.clone(), weights.clone())?;
+            let time_embeddings = upload_time_embeddings_int8_dynamic(&config, &*backend)?;
+            let model = build_int8_dynamic_model(backend.clone(), config.clone(), weights.clone())?;
             ProbeRuntime::Int8 {
-                runtime,
+                model,
                 weights,
                 time_embeddings,
             }
@@ -547,13 +557,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     } else {
         false
     };
-    let mut vision_hidden = runtime.vision_patch_embed(&ctx, &patches)?;
+    let mut vision_hidden = probe.vision_patch_embed(&ctx, &patches)?;
     signatures.insert(
         "vision_patch_embed".into(),
         device_signature(&backend, &vision_hidden)?,
     );
     for index in 0..config.vision_depth {
-        vision_hidden = runtime.vision_layer(&ctx, index, &vision_hidden, packed_vision_qkv)?;
+        vision_hidden = probe.vision_layer(&ctx, index, &vision_hidden, packed_vision_qkv)?;
         signatures.insert(
             format!("vision_layer_{index}"),
             device_signature(&backend, &vision_hidden)?,
@@ -561,15 +571,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     eprintln!("probing vision projection...");
-    let vision = runtime.encode_vision(&patches)?;
+    let vision = probe.encode_vision(&patches)?;
     signatures.insert(
         "vision_projected".into(),
         device_signature(&backend, &vision)?,
     );
 
     eprintln!("probing language prefix K/V...");
-    let prefix_input = runtime.embed_prefix(&vision, &token_ids, token_count)?;
-    let prefix = runtime.prefix_forward(&prefix_input)?;
+    let prefix_input = probe.embed_prefix(&vision, &token_ids, token_count)?;
+    let prefix = probe.prefix_forward(&prefix_input)?;
     let prefix_tokens = prefix.tokens();
     let values = prefix.values();
     signatures.insert(
@@ -587,9 +597,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // the probe previously hard-coded as `-1.0 / steps` and would have diverged
     // from the runtime had `flow_start_time` ever moved off 1.0.
     let dt = -config.flow_start_time / config.num_flow_steps as f32;
-    let time_embeddings = runtime.time_embeddings().to_vec();
+    let time_embeddings = probe.time_embeddings().to_vec();
     for (step, embedding) in time_embeddings.iter().enumerate() {
-        state = runtime.denoise_step(&state, embedding, &prefix, dt)?;
+        state = probe.denoise_step(&state, embedding, &prefix, dt)?;
         signatures.insert(
             format!("denoise_step_{step}"),
             device_signature(&backend, &state)?,

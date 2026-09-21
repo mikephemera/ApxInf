@@ -7,9 +7,11 @@ projection), and that the language tower's last layer is deliberately truncated.
 
 That truncation is the one piece of non-obvious structure here. The engine
 passes ``compute_tail = index + 1 < depth``
-(``bf16_runtime.rs:291``, ``runtime.rs:397``, ``int8_runtime.rs:247``) and the
+(``crates/apxinf-model/src/pi05/model/blocks/bf16.rs:356``,
+``.../blocks/fp8_static.rs:687``, ``.../blocks/int8_dynamic.rs:343``) and the
 executor, when it is false, returns the layer's *input* unchanged alongside the
-K/V it just wrote (``bf16_executor.rs:47``, ``fp8_executor.rs:109``) -- no
+K/V it just wrote (``.../blocks/bf16.rs:47``, ``.../blocks/fp8_static.rs:95``)
+-- no
 attention, no output projection, no MLP. It saves work without changing the
 result, because layer 17's hidden state is never read; only its K/V is. The
 reference reproduces it so that a per-layer comparison sees structure rather
@@ -183,7 +185,7 @@ class LanguageTower:
             values.append(value)
 
             if not compute_tail:
-                # ``bf16_executor.rs:47`` -- the input passes through untouched.
+                # ``model/blocks/bf16.rs:47`` -- the input passes through untouched.
                 continue
 
             attended = nn_ops.eager_attention(

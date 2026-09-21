@@ -2,11 +2,20 @@
 //!
 //! A candidate is one way to compute one semantic. The descriptor mirrors the
 //! CUDA layer's `Implementation`
-//! (`crates/apxinf-cuda-new/native/adapters/gemm/internal.h:97-112`) field for
-//! field where the field has a meaning without a C++ ABI, so that a MUSA
-//! candidate added later is described the same way a CUDA one is -- and so that
-//! the admission questions (`graph_safe`, `deterministic`, alignment, workspace)
-//! are asked in the same order and with the same names.
+//! (`crates/apxinf-cuda-new/native/adapters/gemm/internal.h:63-79`) where the
+//! field has a meaning without a C++ ABI, so that a MUSA candidate added later
+//! is described the same way a CUDA one is -- and so that the admission
+//! questions (`graph_safe`, `deterministic`, alignment, workspace) are asked in
+//! the same order and with the same names.
+//!
+//! The mirror is deliberately not complete. `Implementation` also carries
+//! `fallback` (`internal.h:71`), which the CUDA layer enforces as a hard
+//! invariant -- a semantic must register exactly one fallback candidate
+//! (`candidates.cpp:231-239`, mirrored for attention in
+//! `adapters/attention/candidates.cpp`). [`Candidate`] has no such field because
+//! this round registers nothing at all: with an empty registry there is no
+//! fallback to designate, and adding the field before the first candidate would
+//! record a promise with no way to keep it.
 //!
 //! **No candidate is registered in this round, and that is a deliberate state
 //! rather than an unfinished one.** The registry being empty is what
@@ -43,11 +52,13 @@ pub struct Candidate {
 
 /// A per-semantic candidate list.
 ///
-/// Held as a plain slice per semantic, the way the CUDA layer holds a static
-/// vector per `Semantic` (`registry.cu:148`). There is no dynamic registration
-/// API: the set of implementations is a property of the build, and letting it be
-/// mutated at run time is how "this candidate silently did not run" becomes
-/// possible.
+/// Held as a plain slice per semantic, the way the CUDA layer holds one
+/// `apxinf::framework::Registry<Implementation>`
+/// (`crates/apxinf-cuda-new/native/framework/registry.h:11`) per `Semantic`, its
+/// entries at `crates/apxinf-cuda-new/native/adapters/gemm/candidates.cpp:151`.
+/// There is no dynamic registration API here or there: the set of
+/// implementations is a property of the build, and letting it be mutated at run
+/// time is how "this candidate silently did not run" becomes possible.
 pub struct Registry {
     semantic: crate::catalog::Semantic,
     candidates: &'static [Candidate],
