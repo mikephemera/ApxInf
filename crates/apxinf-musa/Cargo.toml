@@ -1,0 +1,19 @@
+[package]
+name = "apxinf-musa"
+version = "0.1.0"
+edition = "2021"
+license = "Apache-2.0"
+description = "MUSA operator layer for ApxInf: L3 semantics, candidate registry, and the resolution that decides what runs where."
+
+# Deliberately outside the workspace members, following `crates/apxinf-cuda-new`:
+# the layer is developed against its own test entry point and swapped in when it
+# is ready, rather than replacing a working backend in the same build.
+[workspace]
+
+[dependencies]
+# Only what the catalog and the resolution report need. There is no MUSA
+# toolchain dependency here yet, and no FFI: registering a native candidate is
+# what would introduce one, and no candidate is registered.
+serde_json = "1"
+
+[dev-dependencies]

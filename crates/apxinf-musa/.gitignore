@@ -1,0 +1,3 @@
+# The crate is its own workspace, so its build output lands here and the
+# repository root's anchored /target rule does not reach it.
+/target

@@ -13,3 +13,12 @@ experiment/
 
 # Local development artifacts (see AGENTS.md)
 /devlocal/
+
+# Local Python environments and packaging by-products. `python/apxinf_ref`
+# is installed editable during development, which leaves an egg-info next to
+# the package.
+.venv/
+*.egg-info/
+.pytest_cache/
+build/
+dist/

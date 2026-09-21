@@ -31,6 +31,10 @@ name = "pi05_integrity_probe"
 required-features = ["cuda"]
 
 [[example]]
+name = "pi05_stage_probe"
+required-features = ["cuda"]
+
+[[example]]
 name = "pi05_auto_smoke"
 required-features = ["cuda"]
 

@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "apxinf-ref"
+version = "0.1.0"
+description = "Device-independent eager Pi0.5 reference runtime: the ground-truth oracle for the ApxInf CUDA and MUSA engines."
+license = { text = "Apache-2.0" }
+# The MUSA wheels that this runtime is qualified against are cp310-only
+# (`torch-2.9.0-cp310-cp310-linux_aarch64` and its torch_musa companion), so the
+# floor is 3.10 rather than the 3.9 that `python/apxinf` still supports.
+requires-python = ">=3.10"
+# Unlike `python/apxinf` -- which keeps torch out of its dependency list
+# entirely -- this package exists to run a torch model, so torch is a core
+# dependency rather than an extra. Everything the model needs beyond it
+# (transformers for the vendored upstream snapshot, sentencepiece for the
+# prompt tokenizer) is listed here too.
+dependencies = [
+    "torch>=2.9",
+    "numpy>=1.26,<2",
+    "transformers==4.53.2",
+    "safetensors>=0.4",
+    "sentencepiece>=0.1.99",
+    "Pillow>=9.0.0",
+]
+
+[project.optional-dependencies]
+# `torchada` is what makes one source tree run on CUDA and MUSA alike: it
+# rewrites the torch namespace for Moore Threads hardware. It is optional so
+# that a CUDA-only host can run this package without it.
+musa = ["torchada>=0.1.53"]
+# The observation path -- running the model on a real observation rather than on
+# the patch-based stage probe -- reuses `apxinf`'s pinned resize, prompt
+# template, state discretiser, normalization and LIBERO conventions rather than
+# restating them. Optional because the stage probe takes patches and token ids
+# directly and needs none of it; `python -m apxinf_ref infer` needs both extras.
+observations = ["apxinf"]
+# Reading a LIBERO demonstration out of its HDF5. Separate from `observations`
+# because a replay of a captured bundle needs that extra but not this one.
+libero = ["h5py>=3.8"]
+test = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["apxinf_ref*"]
+
+# The vendored upstream snapshot is data, not a package: it is loaded by path
+# at run time so that `transformers_overlay` can install its replacement
+# modules under Transformers' own names.
+[tool.setuptools.package-data]
+apxinf_ref = ["vendor/pi05/**/*.py", "vendor/pi05/*.md"]
+
+# `slow` marks the one test that runs the model end to end -- a capture and its
+# replay, about two minutes. It is registered, not deselected: the documented
+# self-loop runs the whole directory, and that exchange is the check that proves
+# capture and replay share one set of conventions. `-m "not slow"` gives the
+# contract tests alone, in seconds.
+[tool.pytest.ini_options]
+markers = [
+    "slow: runs the model end to end (needs the checkpoint and a LIBERO dataset)",
+]
