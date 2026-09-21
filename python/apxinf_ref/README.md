@@ -43,35 +43,42 @@ pip install -e 'python/apxinf_ref[libero]'   # h5py, to read LIBERO demonstratio
 
 ## Use
 
+Documents go to **stdout** and the receipt goes to stderr, so a redirect is the
+file and `|` is a pipe. `probe` and `infer` write no file themselves: `--capture`
+(a bundle) and `compare --json` (the comparison table) are the only flags here
+that touch the disk.
+
 ```sh
 # What can this host run on?
 python -m apxinf_ref devices
 
 # A stage probe, matching the engine's fixture (zeros) and view count.
-python -m apxinf_ref probe --device musa --out probe-musa.json
+python -m apxinf_ref probe --device musa > probe-musa.json
 
 # Self-validation with a non-zero fixture; not usable against the engine.
-python -m apxinf_ref probe --device cpu --fixture random --out self.json
+python -m apxinf_ref probe --device cpu --fixture random > self.json
 
-# Run the reference on a real observation, and emit the stage probe for it.
+# Run the reference on a real observation, and print the stage probe for it.
 python -m apxinf_ref infer --device musa --libero-root ~/.cache/openpi/libero_10 \
-    --seed 0 --out infer-musa.json
+    --seed 0 > infer-musa.json
 
 # Capture that observation as a bundle. Do this where the observation is -- on
-# the host with the camera, the dataset or the simulator.
+# the host with the camera, the dataset or the simulator. The bundle carries
+# this run's probe as its own probe.json, so no redirect is needed.
 python -m apxinf_ref infer --device cuda --libero-root <root> --seed 0 \
-    --capture orin-bundle --out orin.json
+    --capture orin-bundle
 
 # Replay the bundle here, so both hosts see the same frames and the same frozen
-# noise, and subtract the two documents stage by stage.
-python -m apxinf_ref infer --device musa --bundle orin-bundle --out replay.json
-python -m apxinf_ref compare orin.json replay.json --thresholds bf16
+# noise, and subtract the two documents stage by stage. The reference document
+# is the one inside the bundle.
+python -m apxinf_ref infer --device musa --bundle orin-bundle > replay.json
+python -m apxinf_ref compare orin-bundle/probe.json replay.json --thresholds bf16
 
 # Subtract any two probes. An `infer` document is a probe, so this works on it too.
 python -m apxinf_ref compare reference.json candidate.json --thresholds bf16
 ```
 
-`infer` writes the stage-probe schema with the action chunk and the provenance
+`infer` prints the stage-probe schema with the action chunk and the provenance
 attached, so `compare` reads it unchanged: the same per-stage subtraction works
 against an engine run on the same observation. What it adds is which frame, which
 rotation, which resize, which statistics and which noise -- the facts that decide
@@ -82,9 +89,7 @@ conventions that ride with it: the frames are stored as robosuite rendered them
 and are rotated on the way in, and the prompt comes from the dataset's
 `problem_info`). `--capture` writes what this run observed out as an
 `apxinf.pi05.bundle.v1` directory -- frames, state, prompt, the frozen noise and
-the answer -- so `--bundle` can hand another host exactly the same inputs. See
-`bundle.py` for the format and [PI0.5 Reference
-Runtime](../../doc/pi05-reference-runtime.md) for the exchange it serves.
+the answer -- so `--bundle` can hand another host exactly the same inputs.
 
 A replay refuses a bundle whose frozen noise is not the draw its seed derives:
 noise is an input, so a mismatch is a different question rather than a rounding

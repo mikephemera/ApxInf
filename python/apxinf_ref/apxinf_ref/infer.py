@@ -14,14 +14,6 @@ attributable -- which frame, whether it was rotated, which resize, which
 normalization statistics, and which noise. Those are the facts that decide
 whether two runs are comparable, and none of them is inferable from the numbers.
 
-``--capture`` writes the observation out as a bundle, which is the other half of
-the exchange. A probe takes patches and token ids directly, so a probe taken on
-one host says nothing about a probe taken on another unless both were handed the
-same inputs; a bundle is that input, written where the observation is and
-replayed wherever the port needs a comparison. ``--capture`` and ``--out`` are
-independent: a capture that recorded a probe but no bundle, or a bundle with no
-standalone probe, would each be a way to lose half the result.
-
 The noise is checked element by element on a replay, and a mismatch is refused.
 That is deliberately the one hard stop: noise is an *input*, so a replay under a
 different draw answers a different question while looking exactly like the same
@@ -355,11 +347,7 @@ def command_infer(args: argparse.Namespace) -> int:
         )
         print(f"[apxinf_ref] captured {destination}", file=sys.stderr)
 
-    if args.out:
-        written = probe_module.write(document, args.out)
-        print(f"[apxinf_ref] wrote {written}", file=sys.stderr)
-    else:
-        print(json.dumps(document, indent=2, sort_keys=True))
+    print(json.dumps(document, indent=2, sort_keys=True))
     return 0
 
 

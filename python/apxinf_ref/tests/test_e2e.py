@@ -13,6 +13,8 @@ this file out; the documented self-loop runs it.
 
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 from types import SimpleNamespace
 
@@ -70,16 +72,32 @@ def run(argv) -> None:
     assert cli.main(argv) == 0
 
 
+def printed(argv) -> str:
+    """Run a documented command and catch the document it prints.
+
+    The commands write nothing, so stdout is where a run's document exists -- and
+    catching it here rather than with ``capsys`` is not a preference: ``capsys``
+    is function-scoped and this file's capture is shared by a module-scoped
+    fixture, which could not depend on it.
+
+    Everything the command prints went to stderr, so what comes back is the
+    document and nothing else; a stray ``print`` would surface downstream as a
+    parse error rather than as a quiet extra line in a file.
+    """
+    stream = io.StringIO()
+    with contextlib.redirect_stdout(stream):
+        run(argv)
+    return stream.getvalue()
+
+
 @pytest.fixture(scope="module")
 def exchange(tmp_path_factory, checkpoint_path, tokenizer_path, norm_stats_path, libero_root):
     """One capture and its replay, shared by every test in this file."""
     directory = tmp_path_factory.mktemp("exchange")
     bundle = directory / "bundle"
-    captured = directory / "captured.json"
-    replayed = directory / "replayed.json"
     device = a_device()
 
-    run(
+    captured = printed(
         [
             "infer",
             "--device",
@@ -90,19 +108,20 @@ def exchange(tmp_path_factory, checkpoint_path, tokenizer_path, norm_stats_path,
             str(SEED),
             "--capture",
             str(bundle),
-            "--out",
-            str(captured),
         ]
     )
     # No --seed: the replay takes the one the bundle recorded.
-    run(["infer", "--device", device, "--bundle", str(bundle), "--out", str(replayed)])
+    replayed = printed(["infer", "--device", device, "--bundle", str(bundle)])
 
     return SimpleNamespace(
         bundle=bundle,
+        # The capture's own stdout, held as text so it can be compared to the
+        # bundle's probe.json byte for byte.
         captured=captured,
-        replayed=replayed,
-        document=json.loads(captured.read_text()),
-        replay=json.loads(replayed.read_text()),
+        replay=json.loads(replayed),
+        # The capture has no other copy: the command wrote no document of its
+        # own, so the bundle's probe.json *is* what it printed.
+        document=json.loads((bundle / bundle_module.PROBE_NAME).read_text()),
     )
 
 
@@ -113,11 +132,9 @@ def test_a_capture_replays_bit_identically_on_the_same_host(exchange):
     assert sorted(captured["intermediate_signatures"]) == sorted(STAGES)
     assert captured["intermediate_signatures"] == replayed["intermediate_signatures"]
 
-    # The producer's own probe travels inside the capture, byte for byte: it is
+    # The producer's own probe travels inside the capture byte for byte: it is
     # what makes a replay scoreable stage by stage rather than on one cosine.
-    assert (exchange.bundle / bundle_module.PROBE_NAME).read_bytes() == (
-        exchange.captured.read_bytes()
-    )
+    assert (exchange.bundle / bundle_module.PROBE_NAME).read_text() == exchange.captured
 
     stored = bundle_module.read_bundle(exchange.bundle)
     # Frames are stored before the resize, so the replay re-runs the letterbox
@@ -147,7 +164,7 @@ def test_a_capture_replays_bit_identically_on_the_same_host(exchange):
     assert comparison["passed"], comparison["failures"]
 
 
-def test_a_replay_under_another_seed_is_refused(exchange, tmp_path):
+def test_a_replay_under_another_seed_is_refused(exchange):
     """The one hard stop: noise is an input, so a different draw is a different
     question -- and it would look exactly like the same one."""
     with pytest.raises(SystemExit, match="frozen noise"):
@@ -160,7 +177,5 @@ def test_a_replay_under_another_seed_is_refused(exchange, tmp_path):
                 str(exchange.bundle),
                 "--seed",
                 str(SEED + 1),
-                "--out",
-                str(tmp_path / "other.json"),
             ]
         )

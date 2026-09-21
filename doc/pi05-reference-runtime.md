@@ -27,10 +27,10 @@ policy's.
 
 ```sh
 python -m apxinf_ref devices                      # what can this host run on
-python -m apxinf_ref probe --device musa --out musa.json
-python -m apxinf_ref infer --device musa --libero-root <libero-root> --out infer.json
-python -m apxinf_ref infer --device cuda --libero-root <root> --capture bundle --out orin.json
-python -m apxinf_ref infer --device musa --bundle bundle --out replay.json
+python -m apxinf_ref probe --device musa > musa.json
+python -m apxinf_ref infer --device musa --libero-root <libero-root> > infer.json
+python -m apxinf_ref infer --device cuda --libero-root <root> --capture bundle
+python -m apxinf_ref infer --device musa --bundle bundle > replay.json
 python -m apxinf_ref compare reference.json candidate.json --thresholds bf16
 ```
 
@@ -66,10 +66,10 @@ stage by stage against a MUSA replay rather than scored on one final cosine.
 Orin (CUDA host)                              MUSA (M1000)
 ────────────────                              ────────────
 apxinf_ref infer --device cuda \              apxinf_ref infer --device musa \
-    --libero-root <root> --seed S \              --bundle <dir> --out musa.json
-    --capture <dir> --out orin.json                       │
-        │                                                 │
-        ├── <dir>/manifest.json   the contract            compare orin.json musa.json
+    --libero-root <root> --seed S \              --bundle <dir> > musa.json
+    --capture <dir>                                         │
+        │                                                   │
+        ├── <dir>/manifest.json   the contract            compare <dir>/probe.json musa.json
         ├── <dir>/inputs.npz      inputs and the answer   --thresholds bf16
         ├── <dir>/probe.json      Orin's own stages         → subtracted stage by stage
         └── <dir>/run.log         a human-readable receipt
@@ -83,12 +83,6 @@ particular build. The engine's own numbers stay where they already live:
 from the other side, and comparing *that* against a reference probe is the
 engine-versus-reference question -- a different axis, which a bundle does not
 serve.
-
-`--capture` and `--out` are independent, and deliberately so: a capture that
-recorded a probe but no bundle, or a bundle with no standalone probe, would each
-be a way to lose half the result. Storing the producer's own probe inside the
-bundle is the load-bearing part of the design: without it a replay can only be
-scored on the final action chunk.
 
 ### What a bundle holds
 
@@ -209,23 +203,23 @@ two minutes. The dataset is found through `APXINF_LIBERO_ROOT`, falling back to
 # The same loop by hand, which is what the slow test runs:
 .venv/bin/python -m apxinf_ref infer --device musa \
     --libero-root ~/.cache/openpi/libero_10 --seed 0 \
-    --capture devlocal/pi05-ref-runtime/results/self-bundle \
-    --out devlocal/pi05-ref-runtime/results/self-infer.json
+    --capture devlocal/pi05-ref-runtime/results/self-bundle
 .venv/bin/python -m apxinf_ref infer --device musa \
-    --bundle devlocal/pi05-ref-runtime/results/self-bundle \
-    --out devlocal/pi05-ref-runtime/results/self-replay.json
-.venv/bin/python -m apxinf_ref compare \
-    devlocal/pi05-ref-runtime/results/self-infer.json \
-    devlocal/pi05-ref-runtime/results/self-replay.json --thresholds bf16
+    --bundle devlocal/pi05-ref-runtime/results/self-bundle
 ```
 
+The replay prints its document and no file is written, which is enough to check
+the loop by eye: `gold_cosine` in the printed document should be `1.0`.
+
 Anything but bit-identical means capture and replay are not in fact sharing one set
-of conventions, which is the only thing the design is for. `compare`'s
-`bitwise_equal` is computed over the 256-value sample grid, so the whole-tensor
-statement is the four scalars alongside it: every stage must have
-`bitwise_equal: true` *and* all four `scalar_drift` values at exactly zero. The
-stronger and simpler form is the one the test asserts: the two
-`intermediate_signatures` maps must be equal, stage for stage.
+of conventions, which is the only thing the design is for. That verdict belongs to
+the test, which has both documents in hand and asserts the strong and simple form
+of it: the two `intermediate_signatures` maps must be equal, stage for stage. The
+`compare` subcommand says the same thing about any two probes and is worth
+redirecting a replay into when a stage does diverge -- its `bitwise_equal` is
+computed over the 256-value sample grid, so the whole-tensor statement is the four
+scalars alongside it: every stage must have `bitwise_equal: true` *and* all four
+`scalar_drift` values at exactly zero.
 
 Two signals come free and are worth reading: the frames in `inputs.npz` should be
 at their **original size**, not at the model's, which is what shows the resize is
@@ -338,14 +332,14 @@ document are what say which one was used.
 # On the CUDA host (Orin/Thor), with the repository checked out, the Rust
 # toolchain, the checkpoint, and `pip install -e python/apxinf_ref` in place.
 
-# 1. the engine, on the same fixture the reference uses. The probe writes its
-#    document to stdout and its progress to stderr, so the redirect is the file.
+# 1. the engine, on the same fixture the reference uses.
 cargo run --release -p apxinf-model --features cuda --example pi05_stage_probe -- \
     <checkpoint-dir> --precision bf16 --token-count 10 > engine-bf16.json
 
-# 2. the reference, same device class
+# 2. the reference, same device class. Both sides put the document on stdout and
+#    their progress on stderr, so on both sides the redirect is the file.
 python -m apxinf_ref probe --engine assembled --device cuda --fixture zeros \
-    --checkpoint <checkpoint-dir> --token-count 10 --out reference-bf16.json
+    --checkpoint <checkpoint-dir> --token-count 10 > reference-bf16.json
 
 # 3. subtract, stage by stage
 python -m apxinf_ref compare reference-bf16.json engine-bf16.json \
@@ -355,7 +349,7 @@ python -m apxinf_ref compare reference-bf16.json engine-bf16.json \
 #    produces an action chunk. Both sides must be given the same observation and
 #    the same seed, and `infer` records both in its document.
 python -m apxinf_ref infer --device cuda --libero-root <libero-root> --seed 0 \
-    --out infer-cuda.json
+    > infer-cuda.json
 ```
 
 Read the result against [the measured floors](#the-measured-floors), not against

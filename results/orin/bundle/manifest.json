@@ -1,0 +1,184 @@
+{
+  "arrays": {
+    "inputs.npz": {
+      "base_image": {
+        "dtype": "uint8",
+        "sha256": "674bff9759dfde03bb85cd62abca69a2380fb7ab7748ed25a9dfafc8b0d424e8",
+        "shape": [
+          128,
+          128,
+          3
+        ]
+      },
+      "formatted_prompt": {
+        "dtype": "<U82",
+        "sha256": "2a16084bd5053f01fa515aa7d7f4a555df8f0f22b30c5b4a723dd231ab4e57bc",
+        "shape": [
+          1
+        ]
+      },
+      "gold_actions": {
+        "dtype": "float32",
+        "sha256": "b8c2eb70ca3ebae1f94406ff1d4caaa6fb73c557eb521d20a030ed517188f68e",
+        "shape": [
+          10,
+          7
+        ]
+      },
+      "gold_raw_actions": {
+        "dtype": "float32",
+        "sha256": "f6f6b0a8de4572bddf4df11836153cac426a5e38cecc27dfafbfeebe9a3b52c4",
+        "shape": [
+          10,
+          32
+        ]
+      },
+      "noise": {
+        "dtype": "float32",
+        "sha256": "2f2b15a588d15662cbf36dc4da3e9fc14fc6f70c6b4e8888ed8dcd7bada38244",
+        "shape": [
+          10,
+          32
+        ]
+      },
+      "preprocessed_base_rgb": {
+        "dtype": "float32",
+        "sha256": "75d2e9a3e6cabadacd43c57cc7ddf7c44d6e03cc7c47d9277ea863fe8fb066a5",
+        "shape": [
+          1,
+          3,
+          224,
+          224
+        ]
+      },
+      "preprocessed_wrist_rgb": {
+        "dtype": "float32",
+        "sha256": "b7ac2cdf80225c11454033ad438b2e1ef389f2720bb636150da27ec0fed439cd",
+        "shape": [
+          1,
+          3,
+          224,
+          224
+        ]
+      },
+      "prompt": {
+        "dtype": "<U31",
+        "sha256": "e80709f6dd9ee7a62c6d71f0b69537abddc4e50fe93ba53f0be7c13ce65acf16",
+        "shape": [
+          1
+        ]
+      },
+      "state": {
+        "dtype": "float32",
+        "sha256": "00194a5163ea8cbc42c707fa0814db06fcc4210dd37379f3f30b254fe567e3ba",
+        "shape": [
+          8
+        ]
+      },
+      "token_ids": {
+        "dtype": "int64",
+        "sha256": "7d4cf3051a7cd0236dc8cc6602f366cd1a50019bca25d2b3452a884d1c922777",
+        "shape": [
+          46
+        ]
+      },
+      "wrist_image": {
+        "dtype": "uint8",
+        "sha256": "03ff0c7bab9582c54526149462502832f6ef4455ad6a09bc7ab6976d8a71fe56",
+        "shape": [
+          128,
+          128,
+          3
+        ]
+      }
+    }
+  },
+  "artifacts": {
+    "checkpoint": {
+      "path": "/home/mt/.cache/openpi/openpi-assets/checkpoints/pi05_libero_pytorch",
+      "sha256": "d648dc6c5a4da5ccec752297f564e4259c66a6f08bad8b5f6919f86e0f82edb5",
+      "weights": "model.safetensors"
+    },
+    "norm_stats": {
+      "path": "/home/mt/.cache/openpi/openpi-assets/checkpoints/pi05_libero_pytorch/assets/physical-intelligence/libero/norm_stats.json",
+      "sha256": "b3a44bb2810436fb62917decaea58bd4d9110255df527dea21e8fd40c960bd84"
+    },
+    "tokenizer": {
+      "path": "/home/mt/.cache/openpi/big_vision/paligemma_tokenizer.model",
+      "sha256": "8986bb4f423f07f8c7f70d0dbe3526fb2316056c17bae71b1ea975e77a168fc6"
+    }
+  },
+  "files": {
+    "inputs.npz": {
+      "bytes": 1309060,
+      "sha256": "b68246ae2208451a704831c88b0f6dce44c62ab596ba582fc883b71f4353b00b"
+    },
+    "probe.json": {
+      "bytes": 242196,
+      "sha256": "e38fe61a7d491551f4cb96b00db9f971014e7cf4d925271a97b71f644ddaf347"
+    }
+  },
+  "generated_at": "2026-09-21T07:13:43+00:00",
+  "producer": {
+    "device": "cuda:0",
+    "engine": "assembled",
+    "package": "apxinf-ref",
+    "precision": "bfloat16",
+    "torch": "2.9.1a0+gitd38164a",
+    "version": "0.1.0"
+  },
+  "schema": "apxinf.pi05.bundle.v1",
+  "seed": 0,
+  "source": {
+    "image_size": 224,
+    "kind": "libero_hdf5",
+    "num_views": 2,
+    "oriented": true,
+    "resize": "apxinf.processors.ResizeWithPad (PIL BILINEAR, antialiased)",
+    "sample": {
+      "image_shape": [
+        128,
+        128,
+        3
+      ],
+      "prompt": "put both moka pots on the stove",
+      "provenance": {
+        "cameras": [
+          "agentview_rgb",
+          "eye_in_hand_rgb"
+        ],
+        "demo": "demo_35",
+        "file": "KITCHEN_SCENE8_put_both_moka_pots_on_the_stove_demo.hdf5",
+        "frame_index": 399,
+        "global_index": 53487,
+        "state_layout": "ee_pos+ee_ori+gripper_states"
+      },
+      "state": [
+        -0.03417716175317764,
+        0.13092684745788574,
+        1.0699712038040161,
+        2.589479446411133,
+        -2.637462615966797,
+        -1.0284184217453003,
+        0.007170748431235552,
+        -0.006903615780174732
+      ],
+      "state_dim": 8,
+      "wrist_image_shape": [
+        128,
+        128,
+        3
+      ]
+    },
+    "source_image_size": [
+      128,
+      128
+    ]
+  },
+  "state_width": 8,
+  "thresholds": {
+    "final_actions_cosine": 0.999,
+    "stage_cosine": 0.999
+  },
+  "token_count": 46
+}

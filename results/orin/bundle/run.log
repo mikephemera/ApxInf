@@ -1,0 +1,10 @@
+PI0.5 reference capture, written 2026-09-21T07:13:43+00:00
+
+engine=assembled device=cuda:0 precision=bfloat16
+source=libero_hdf5 seed=0 views=2 tokens=46 state=8 image_size=224
+source_image_size=(128, 128) resize=apxinf.processors.ResizeWithPad (PIL BILINEAR, antialiased)
+prompt='put both moka pots on the stove'
+checkpoint=/home/mt/.cache/openpi/openpi-assets/checkpoints/pi05_libero_pytorch
+artifacts.checkpoint=d648dc6c5a4da5ccec752297f564e4259c66a6f08bad8b5f6919f86e0f82edb5 (/home/mt/.cache/openpi/openpi-assets/checkpoints/pi05_libero_pytorch)
+artifacts.tokenizer=8986bb4f423f07f8c7f70d0dbe3526fb2316056c17bae71b1ea975e77a168fc6 (/home/mt/.cache/openpi/big_vision/paligemma_tokenizer.model)
+artifacts.norm_stats=b3a44bb2810436fb62917decaea58bd4d9110255df527dea21e8fd40c960bd84 (/home/mt/.cache/openpi/openpi-assets/checkpoints/pi05_libero_pytorch/assets/physical-intelligence/libero/norm_stats.json)

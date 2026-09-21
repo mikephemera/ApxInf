@@ -208,10 +208,8 @@ def write_bundle(
 ) -> Path:
     """Write a capture, or refuse and say why.
 
-    ``document`` is the producer's stage-probe document -- the very one written
-    to ``--out`` -- and it is stored as ``probe.json``: a capture that recorded a
-    probe but no bundle, or a bundle with no standalone probe, would each be a
-    way to lose half the result.
+    ``document`` is the producer's stage-probe document -- the very one the run
+    printed -- and it is stored as ``probe.json``.
 
     ``engine``, ``device``, ``precision`` and ``seed`` are not derivable from
     anything else here; they are what the manifest's ``producer`` block needs and

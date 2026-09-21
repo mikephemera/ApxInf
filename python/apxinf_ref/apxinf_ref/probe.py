@@ -23,13 +23,11 @@ including the details that are easy to "clean up" and wrong to:
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .device import torch_module
 
-__all__ = ["SCHEMA", "ProbeResult", "collect", "run", "signature", "write"]
+__all__ = ["SCHEMA", "ProbeResult", "collect", "run", "signature"]
 
 SCHEMA = "apxinf.pi05.stage-probe.v1"
 
@@ -102,22 +100,6 @@ class ProbeResult:
     @property
     def signatures(self) -> dict:
         return self.document["intermediate_signatures"]
-
-    def write(self, path: str | Path) -> Path:
-        return write(self.document, path)
-
-
-def write(document: Mapping[str, Any], path: str | Path) -> Path:
-    """Write the probe document.
-
-    Keys are sorted so that two runs of the same implementation produce
-    byte-identical files. The engine reaches the same ordering for free: its
-    stage map is a ``BTreeMap``.
-    """
-    destination = Path(path)
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    destination.write_text(json.dumps(document, indent=2, sort_keys=True) + "\n")
-    return destination
 
 
 def collect(

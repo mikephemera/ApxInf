@@ -119,11 +119,7 @@ def command_probe(args: argparse.Namespace) -> int:
     )
 
     result = probe_module.run(model, patches=patches, token_ids=token_ids, noise=noise)
-    if args.out:
-        path = result.write(args.out)
-        print(f"[apxinf_ref] wrote {path}", file=sys.stderr)
-    else:
-        print(json.dumps(result.document, indent=2, sort_keys=True))
+    print(json.dumps(result.document, indent=2, sort_keys=True))
     return 0
 
 
@@ -146,12 +142,11 @@ def build_parser() -> argparse.ArgumentParser:
         default="zeros",
         help="zeros matches the engine's probe; random is for self-validation",
     )
-    probe_parser.add_argument("--out", help="write here instead of stdout")
     probe_parser.set_defaults(handler=command_probe)
 
     infer_parser = sub.add_parser(
         "infer",
-        help="run the reference on a real observation and emit the stage probe for it",
+        help="run the reference on a real observation and print the stage probe for it",
     )
     _add_common(infer_parser)
     _add_engine_choices(infer_parser)
@@ -181,7 +176,6 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help=f"norm_stats.json. Defaults to ${paths.ENV_NORM_STATS}, then the checkpoint's own",
     )
-    infer_parser.add_argument("--out", help="write here instead of stdout")
     infer_parser.add_argument(
         "--capture",
         help="also write the observation out as a bundle directory, so another host "
