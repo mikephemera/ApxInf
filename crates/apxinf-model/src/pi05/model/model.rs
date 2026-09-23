@@ -3,10 +3,12 @@ use super::blocks::{Bf16Blocks, Fp8StaticBlocks, Int8DynamicBlocks};
 use super::Pi05Model;
 use super::{Bf16Model, Fp8StaticModel, Int8DynamicModel};
 use crate::pi05::backend::RuntimeBackend;
+use crate::pi05::trace_names;
 use crate::pi05::weights::{
     Bf16Weights, Fp8StaticActivationScales, Fp8StaticWeights, Int8DynamicWeights,
 };
 use crate::pi05::{sinusoidal_time_embedding, Pi05Config};
+use crate::profiling::trace;
 use apxinf_core::{Backend, Result, Tensor};
 use std::sync::Arc;
 pub fn build_bf16_model(
@@ -162,7 +164,10 @@ impl ModelVariant {
             Self::Bf16 {
                 model,
                 time_embeddings,
-            } => operation.run(model, time_embeddings),
+            } => {
+                let _range = trace::range(trace_names::CAPTURE);
+                operation.run(model, time_embeddings)
+            }
             Self::Fp8Static {
                 model,
                 time_embeddings,

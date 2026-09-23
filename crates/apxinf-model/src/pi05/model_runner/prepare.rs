@@ -5,6 +5,7 @@ use crate::pi05::backend::{
 use crate::pi05::model::Pi05Model;
 use crate::pi05::model::{ModelOperation, ModelVariant, PrepareBlocks, WorkspaceRequirements};
 use crate::pi05::{Pi05Config, Pi05ImageLayout};
+use crate::profiling::trace;
 use apxinf_core::{Backend, Error, Graph, Result, Tensor};
 use std::sync::Arc;
 
@@ -34,10 +35,12 @@ pub struct CapturedGraph {
 
 impl CapturedGraph {
     pub fn replay(&self) -> Result<()> {
+        let _range = trace::range("pi05.graph_replay");
         self.graph.replay()
     }
 
     pub fn replay_and_synchronize(&self) -> Result<()> {
+        let _range = trace::range("pi05.graph_replay");
         self.graph.replay()?;
         self.backend.synchronize()
     }
@@ -60,10 +63,12 @@ impl CapturedGraph {
 
     pub fn update_inputs(&self, patches: &Tensor, token_ids: &[u32], noise: &Tensor) -> Result<()> {
         self.update_inputs_without_noise(patches, token_ids)?;
+        let _range = trace::range("pi05.graph_noise_update");
         transfers::copy_cpu_to_cuda(noise, &self.noise)
     }
 
     pub fn update_inputs_without_noise(&self, patches: &Tensor, token_ids: &[u32]) -> Result<()> {
+        let _range = trace::range("pi05.graph_input_update");
         if self.raw_images.is_some() {
             return Err(Error::Other(
                 "π0.5 graph uses raw RGB input; call update_raw_image_inputs".into(),
@@ -88,6 +93,7 @@ impl CapturedGraph {
         noise: &Tensor,
     ) -> Result<()> {
         self.update_raw_image_inputs_without_noise(images, token_ids)?;
+        let _range = trace::range("pi05.graph_noise_update");
         transfers::copy_cpu_to_cuda(noise, &self.noise)
     }
 
@@ -96,6 +102,7 @@ impl CapturedGraph {
         images: &[u8],
         token_ids: &[u32],
     ) -> Result<()> {
+        let _range = trace::range("pi05.graph_input_update");
         let raw_images = self.raw_images.as_ref().ok_or_else(|| {
             Error::Other("π0.5 graph uses patch input; call update_inputs".into())
         })?;

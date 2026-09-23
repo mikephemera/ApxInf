@@ -1,6 +1,8 @@
 //! Native-BF16 π0.5 transformer-layer computation.
 
 use crate::pi05::backend::{kernels, Context};
+use crate::pi05::trace_names;
+use crate::profiling::trace;
 use apxinf_core::{Error, Result, Tensor};
 use kernels::{activation, attention, embedding, fused, gemm, norm, rope};
 
@@ -31,18 +33,27 @@ pub fn language_layer_bf16(
     rms_eps: f32,
     rope_theta: f32,
 ) -> Result<Bf16LanguageLayerOutput> {
-    let normalized = norm::rms_bf16(ctx, input, &weights.input_norm_scale, rms_eps)?;
-    let qkv = gemm::bf16(ctx, &normalized, &weights.qkv.weight)?;
-    let qkv = rope::split_qkv_apply_bf16(
-        ctx,
-        &qkv,
-        weights.qkv.bias.as_ref(),
-        config.num_heads,
-        config.num_kv_heads,
-        config.head_dim,
-        rope_theta,
-        position_offset,
-    )?;
+    let normalized = {
+        let _range = trace::range(trace_names::OP_NORM);
+        norm::rms_bf16(ctx, input, &weights.input_norm_scale, rms_eps)?
+    };
+    let qkv = {
+        let _range = trace::range(trace_names::OP_QKV_GEMM);
+        gemm::bf16(ctx, &normalized, &weights.qkv.weight)?
+    };
+    let qkv = {
+        let _range = trace::range(trace_names::OP_QKV_SPLIT_ROPE);
+        rope::split_qkv_apply_bf16(
+            ctx,
+            &qkv,
+            weights.qkv.bias.as_ref(),
+            config.num_heads,
+            config.num_kv_heads,
+            config.head_dim,
+            rope_theta,
+            position_offset,
+        )?
+    };
     let tokens = input.shape().dims()[0];
     if !compute_tail {
         return Ok(Bf16LanguageLayerOutput {
@@ -51,28 +62,45 @@ pub fn language_layer_bf16(
             value: qkv.value_2d(tokens, config.head_dim)?,
         });
     }
-    let attention = attention::mqa_bf16(ctx, &qkv.q, &qkv.k, &qkv.v, tokens)?
-        .reshape(vec![tokens, config.num_heads * config.head_dim])?;
-    let projected = gemm::bf16(ctx, &attention, &weights.output.weight)?;
-    let fused = fused::bias_residual_rms_bf16(
-        ctx,
-        &projected,
-        weights.output.bias.as_ref(),
-        input,
-        &weights.post_attention_norm_scale,
-        rms_eps,
-    )?;
-    let activated = gemm::bf16_geglu_fused(
-        ctx,
-        &fused.normalized,
-        &weights.gate_up.weight,
-        weights.gate_up.bf16_dual_geglu_interleaved,
-        weights.gate_up.bf16_dual_geglu_auto_interleaved.as_ref(),
-        weights.gate_up.bf16_sm89_geglu_interleaved.as_ref(),
-    )?;
-    let projected = gemm::bf16(ctx, &activated, &weights.down.weight)?;
-    let hidden =
-        fused::bias_residual_bf16(ctx, &projected, weights.down.bias.as_ref(), &fused.hidden)?;
+    let attention = {
+        let _range = trace::range(trace_names::OP_ATTENTION);
+        attention::mqa_bf16(ctx, &qkv.q, &qkv.k, &qkv.v, tokens)?
+            .reshape(vec![tokens, config.num_heads * config.head_dim])?
+    };
+    let projected = {
+        let _range = trace::range(trace_names::OP_OUTPUT_GEMM);
+        gemm::bf16(ctx, &attention, &weights.output.weight)?
+    };
+    let fused = {
+        let _range = trace::range(trace_names::OP_RESIDUAL_NORM);
+        fused::bias_residual_rms_bf16(
+            ctx,
+            &projected,
+            weights.output.bias.as_ref(),
+            input,
+            &weights.post_attention_norm_scale,
+            rms_eps,
+        )?
+    };
+    let activated = {
+        let _range = trace::range(trace_names::OP_GATE_UP_GEGLU);
+        gemm::bf16_geglu_fused(
+            ctx,
+            &fused.normalized,
+            &weights.gate_up.weight,
+            weights.gate_up.bf16_dual_geglu_interleaved,
+            weights.gate_up.bf16_dual_geglu_auto_interleaved.as_ref(),
+            weights.gate_up.bf16_sm89_geglu_interleaved.as_ref(),
+        )?
+    };
+    let projected = {
+        let _range = trace::range(trace_names::OP_DOWN_GEMM);
+        gemm::bf16(ctx, &activated, &weights.down.weight)?
+    };
+    let hidden = {
+        let _range = trace::range(trace_names::OP_RESIDUAL);
+        fused::bias_residual_bf16(ctx, &projected, weights.down.bias.as_ref(), &fused.hidden)?
+    };
     Ok(Bf16LanguageLayerOutput {
         hidden,
         key: qkv.key_2d(tokens, config.head_dim)?,
@@ -98,59 +126,86 @@ pub fn action_layer_bf16(
 ) -> Result<Bf16ActionLayerOutput> {
     let normalized = match attention_normalized {
         Some(value) => value.clone(),
-        None => norm::adaptive_rms_bf16(ctx, input, attention_modulation, rms_eps)?,
+        None => {
+            let _range = trace::range(trace_names::OP_NORM);
+            norm::adaptive_rms_bf16(ctx, input, attention_modulation, rms_eps)?
+        }
     };
-    let qkv = gemm::bf16(ctx, &normalized, &weights.qkv.weight)?;
-    let q = rope::apply_q_write_kv_bf16(
-        ctx,
-        &qkv,
-        weights.qkv.bias.as_ref(),
-        config.num_heads,
-        config.num_kv_heads,
-        config.head_dim,
-        rope_theta,
-        position_offset,
-        prefix_k,
-        prefix_v,
-        position_offset,
-    )?;
-    let attention = attention::mqa_bf16(
-        ctx,
-        &q,
-        prefix_k,
-        prefix_v,
-        position_offset + input.shape().dims()[0],
-    )?
-    .reshape(vec![
-        input.shape().dims()[0],
-        config.num_heads * config.head_dim,
-    ])?;
-    let projected = gemm::bf16(ctx, &attention, &weights.output.weight)?;
-    let fused = fused::adaptive_gate_residual_rms_bf16(
-        ctx,
-        &projected,
-        input,
-        attention_modulation,
-        mlp_modulation,
-        rms_eps,
-    )?;
-    let activated = gemm::bf16_geglu_fused(
-        ctx,
-        &fused.normalized,
-        &weights.gate_up.weight,
-        weights.gate_up.bf16_dual_geglu_interleaved,
-        weights.gate_up.bf16_dual_geglu_auto_interleaved.as_ref(),
-        weights.gate_up.bf16_sm89_geglu_interleaved.as_ref(),
-    )?;
-    let projected = gemm::bf16(ctx, &activated, &weights.down.weight)?;
-    let fused = fused::adaptive_gate_residual_rms_bf16(
-        ctx,
-        &projected,
-        &fused.hidden,
-        mlp_modulation,
-        next_norm_modulation,
-        rms_eps,
-    )?;
+    let qkv = {
+        let _range = trace::range(trace_names::OP_QKV_GEMM);
+        gemm::bf16(ctx, &normalized, &weights.qkv.weight)?
+    };
+    let q = {
+        let _range = trace::range(trace_names::OP_QKV_ROPE_CACHE);
+        rope::apply_q_write_kv_bf16(
+            ctx,
+            &qkv,
+            weights.qkv.bias.as_ref(),
+            config.num_heads,
+            config.num_kv_heads,
+            config.head_dim,
+            rope_theta,
+            position_offset,
+            prefix_k,
+            prefix_v,
+            position_offset,
+        )?
+    };
+    let attention = {
+        let _range = trace::range(trace_names::OP_ATTENTION);
+        attention::mqa_bf16(
+            ctx,
+            &q,
+            prefix_k,
+            prefix_v,
+            position_offset + input.shape().dims()[0],
+        )?
+        .reshape(vec![
+            input.shape().dims()[0],
+            config.num_heads * config.head_dim,
+        ])?
+    };
+    let projected = {
+        let _range = trace::range(trace_names::OP_OUTPUT_GEMM);
+        gemm::bf16(ctx, &attention, &weights.output.weight)?
+    };
+    let fused = {
+        let _range = trace::range(trace_names::OP_RESIDUAL_NORM);
+        fused::adaptive_gate_residual_rms_bf16(
+            ctx,
+            &projected,
+            input,
+            attention_modulation,
+            mlp_modulation,
+            rms_eps,
+        )?
+    };
+    let activated = {
+        let _range = trace::range(trace_names::OP_GATE_UP_GEGLU);
+        gemm::bf16_geglu_fused(
+            ctx,
+            &fused.normalized,
+            &weights.gate_up.weight,
+            weights.gate_up.bf16_dual_geglu_interleaved,
+            weights.gate_up.bf16_dual_geglu_auto_interleaved.as_ref(),
+            weights.gate_up.bf16_sm89_geglu_interleaved.as_ref(),
+        )?
+    };
+    let projected = {
+        let _range = trace::range(trace_names::OP_DOWN_GEMM);
+        gemm::bf16(ctx, &activated, &weights.down.weight)?
+    };
+    let fused = {
+        let _range = trace::range(trace_names::OP_RESIDUAL_NORM);
+        fused::adaptive_gate_residual_rms_bf16(
+            ctx,
+            &projected,
+            &fused.hidden,
+            mlp_modulation,
+            next_norm_modulation,
+            rms_eps,
+        )?
+    };
     Ok(Bf16ActionLayerOutput {
         hidden: fused.hidden,
         next_normalized: fused.normalized,
@@ -164,7 +219,12 @@ pub fn vision_patch_embed_bf16(
     patches: &Tensor,
     patches_per_view: usize,
 ) -> Result<Tensor> {
-    let projection = gemm::bf16(ctx, patches, &weights.weight)?;
+    let _range = trace::range(trace_names::VISION_PATCH_EMBED);
+    let projection = {
+        let _range = trace::range(trace_names::OP_PATCH_GEMM);
+        gemm::bf16(ctx, patches, &weights.weight)?
+    };
+    let _range = trace::range(trace_names::OP_POSITION);
     embedding::add_position_bf16(
         ctx,
         &projection,
@@ -184,31 +244,58 @@ pub fn vision_layer_bf16(
     head_dim: usize,
     layer_norm_eps: f32,
 ) -> Result<Tensor> {
-    let normalized = norm::layer_bf16(
-        ctx,
-        input,
-        &weights.norm1.weight,
-        &weights.norm1.bias,
-        layer_norm_eps,
-    )?;
-    let qkv = gemm::bf16(ctx, &normalized, &weights.qkv.weight)?;
-    let qkv =
-        attention::split_qkv_bias_bf16(ctx, &qkv, weights.qkv.bias.as_ref(), heads, head_dim)?;
-    let attention = attention::mha_bf16(ctx, &qkv.q, &qkv.k, &qkv.v, patches_per_view)?
-        .reshape(vec![input.shape().dims()[0], heads * head_dim])?;
-    let projection = gemm::bf16(ctx, &attention, &weights.output.weight)?;
-    let fused = fused::bias_residual_layer_bf16(
-        ctx,
-        &projection,
-        weights.output.bias.as_ref(),
-        input,
-        &weights.norm2.weight,
-        &weights.norm2.bias,
-        layer_norm_eps,
-    )?;
-    let activation = gemm::bf16(ctx, &fused.normalized, &weights.fc1.weight)?;
-    let activation = activation::bias_gelu_bf16(ctx, &activation, weights.fc1.bias.as_ref())?;
-    let projection = gemm::bf16(ctx, &activation, &weights.fc2.weight)?;
+    let normalized = {
+        let _range = trace::range(trace_names::OP_NORM);
+        norm::layer_bf16(
+            ctx,
+            input,
+            &weights.norm1.weight,
+            &weights.norm1.bias,
+            layer_norm_eps,
+        )?
+    };
+    let qkv = {
+        let _range = trace::range(trace_names::OP_QKV_GEMM);
+        gemm::bf16(ctx, &normalized, &weights.qkv.weight)?
+    };
+    let qkv = {
+        let _range = trace::range(trace_names::OP_QKV_SPLIT_ROPE);
+        attention::split_qkv_bias_bf16(ctx, &qkv, weights.qkv.bias.as_ref(), heads, head_dim)?
+    };
+    let attention = {
+        let _range = trace::range(trace_names::OP_ATTENTION);
+        attention::mha_bf16(ctx, &qkv.q, &qkv.k, &qkv.v, patches_per_view)?
+            .reshape(vec![input.shape().dims()[0], heads * head_dim])?
+    };
+    let projection = {
+        let _range = trace::range(trace_names::OP_OUTPUT_GEMM);
+        gemm::bf16(ctx, &attention, &weights.output.weight)?
+    };
+    let fused = {
+        let _range = trace::range(trace_names::OP_RESIDUAL_NORM);
+        fused::bias_residual_layer_bf16(
+            ctx,
+            &projection,
+            weights.output.bias.as_ref(),
+            input,
+            &weights.norm2.weight,
+            &weights.norm2.bias,
+            layer_norm_eps,
+        )?
+    };
+    let activation = {
+        let _range = trace::range(trace_names::OP_MLP_IN_GEMM);
+        gemm::bf16(ctx, &fused.normalized, &weights.fc1.weight)?
+    };
+    let activation = {
+        let _range = trace::range(trace_names::OP_ACTIVATION);
+        activation::bias_gelu_bf16(ctx, &activation, weights.fc1.bias.as_ref())?
+    };
+    let projection = {
+        let _range = trace::range(trace_names::OP_DOWN_GEMM);
+        gemm::bf16(ctx, &activation, &weights.fc2.weight)?
+    };
+    let _range = trace::range(trace_names::OP_RESIDUAL);
     fused::bias_residual_bf16(ctx, &projection, weights.fc2.bias.as_ref(), &fused.hidden)
 }
 
@@ -243,6 +330,7 @@ pub(in crate::pi05::model) mod backbone {
     }
 
     pub struct Bf16StepModulation {
+        step: usize,
         attention: Vec<Tensor>,
         mlp: Vec<Tensor>,
         final_norm: Tensor,
@@ -285,6 +373,7 @@ pub(in crate::pi05::model) mod backbone {
                     got: patches.dtype(),
                 });
             }
+            let _range = trace::range(trace_names::VISION);
             let mut hidden = vision_patch_embed_bf16(
                 self.ctx(),
                 &self.weights.patch_embedding,
@@ -292,7 +381,8 @@ pub(in crate::pi05::model) mod backbone {
                 patches,
                 self.config.patches_per_view(),
             )?;
-            for layer in &self.weights.vision_layers {
+            for (index, layer) in self.weights.vision_layers.iter().enumerate() {
+                let _layer_range = trace::range(&trace_names::vision_layer(index));
                 hidden = vision_layer_bf16(
                     self.ctx(),
                     layer,
@@ -303,18 +393,24 @@ pub(in crate::pi05::model) mod backbone {
                     self.config.layer_norm_eps,
                 )?;
             }
-            let hidden = norm::layer_bf16(
-                self.ctx(),
-                &hidden,
-                &self.weights.vision_post_norm.weight,
-                &self.weights.vision_post_norm.bias,
-                self.config.layer_norm_eps,
-            )?;
-            let projected = gemm::bf16(
-                self.ctx(),
-                &hidden,
-                &self.weights.multimodal_projector.weight,
-            )?;
+            let hidden = {
+                let _range = trace::range(trace_names::VISION_POST_NORM);
+                norm::layer_bf16(
+                    self.ctx(),
+                    &hidden,
+                    &self.weights.vision_post_norm.weight,
+                    &self.weights.vision_post_norm.bias,
+                    self.config.layer_norm_eps,
+                )?
+            };
+            let projected = {
+                let _range = trace::range(trace_names::VISION_PROJECTOR);
+                gemm::bf16(
+                    self.ctx(),
+                    &hidden,
+                    &self.weights.multimodal_projector.weight,
+                )?
+            };
             elementwise::bias_bf16(
                 self.ctx(),
                 &projected,
@@ -334,20 +430,27 @@ pub(in crate::pi05::model) mod backbone {
                     self.config.max_token_len
                 )));
             }
-            let language = embedding::lookup_bf16(
-                self.ctx(),
-                &self.weights.token_embedding,
-                token_ids,
-                token_count,
-            )?;
+            let _range = trace::range(trace_names::PREFIX);
+            let language = {
+                let _range = trace::range(trace_names::PREFIX_EMBED);
+                embedding::lookup_bf16(
+                    self.ctx(),
+                    &self.weights.token_embedding,
+                    token_ids,
+                    token_count,
+                )?
+            };
+            let _range = trace::range(trace_names::PREFIX_CONCAT);
             elementwise::concat_rows_bf16(self.ctx(), vision_tokens, &language)
         }
 
         pub fn prefix_forward(&self, prefix: &Tensor) -> Result<Bf16PrefixKvCache> {
+            let _range = trace::range(trace_names::PREFIX);
             let mut hidden = prefix.clone();
             let mut keys = Vec::with_capacity(self.config.language.depth);
             let mut values = Vec::with_capacity(self.config.language.depth);
             for (index, layer) in self.weights.language_layers.iter().enumerate() {
+                let _layer_range = trace::range(&trace_names::prefix_layer(index));
                 let output = language_layer_bf16(
                     self.ctx(),
                     self.config.language,
@@ -379,6 +482,7 @@ pub(in crate::pi05::model) mod backbone {
         }
 
         fn conditioning(&self, time_embedding: &Tensor) -> Result<Tensor> {
+            let _range = trace::range(trace_names::MODULATION_CONDITIONING);
             let hidden = gemm::bf16(self.ctx(), time_embedding, &self.weights.time_mlp_in.weight)?;
             let hidden = activation::bias_silu_bf16(
                 self.ctx(),
@@ -390,12 +494,18 @@ pub(in crate::pi05::model) mod backbone {
         }
 
         fn modulation(&self, conditioning: &Tensor, weights: &Bf16LinearWeights) -> Result<Tensor> {
+            let _range = trace::range(trace_names::MODULATION_PROJECTION);
             let projected = gemm::bf16(self.ctx(), conditioning, &weights.weight)?;
             let modulation = elementwise::bias_bf16(self.ctx(), &projected, weights.bias.as_ref())?;
             modulation.reshape(vec![modulation.numel()])
         }
 
-        fn prepare_step_modulation(&self, time_embedding: &Tensor) -> Result<Bf16StepModulation> {
+        fn prepare_step_modulation(
+            &self,
+            step: usize,
+            time_embedding: &Tensor,
+        ) -> Result<Bf16StepModulation> {
+            let _range = trace::range(&trace_names::modulation_step(step));
             let conditioning = self.conditioning(time_embedding)?;
             let mut attention = Vec::with_capacity(self.config.action_expert.depth);
             let mut mlp = Vec::with_capacity(self.config.action_expert.depth);
@@ -406,6 +516,7 @@ pub(in crate::pi05::model) mod backbone {
             let final_norm =
                 self.modulation(&conditioning, &self.weights.action_final_modulation)?;
             Ok(Bf16StepModulation {
+                step,
                 attention,
                 mlp,
                 final_norm,
@@ -425,7 +536,8 @@ pub(in crate::pi05::model) mod backbone {
             }
             time_embeddings
                 .iter()
-                .map(|embedding| self.prepare_step_modulation(embedding))
+                .enumerate()
+                .map(|(step, embedding)| self.prepare_step_modulation(step, embedding))
                 .collect()
         }
 
@@ -436,6 +548,7 @@ pub(in crate::pi05::model) mod backbone {
             prefix: &Bf16PrefixKvCache,
             dt: f32,
         ) -> Result<Tensor> {
+            let _step_range = trace::range(&trace_names::denoise_step(modulation.step));
             if prefix.keys.len() != self.config.action_expert.depth
                 || prefix.values.len() != self.config.action_expert.depth
                 || modulation.attention.len() != self.config.action_expert.depth
@@ -445,11 +558,17 @@ pub(in crate::pi05::model) mod backbone {
                     "π0.5 BF16 prefix/modulation depth mismatch".into(),
                 ));
             }
-            let hidden = gemm::bf16(self.ctx(), state, &self.weights.action_in.weight)?;
-            let mut hidden =
-                elementwise::bias_bf16(self.ctx(), &hidden, self.weights.action_in.bias.as_ref())?;
+            let hidden = {
+                let _range = trace::range(trace_names::ACTION_INPUT_GEMM);
+                gemm::bf16(self.ctx(), state, &self.weights.action_in.weight)?
+            };
+            let mut hidden = {
+                let _range = trace::range(trace_names::ACTION_INPUT_BIAS);
+                elementwise::bias_bf16(self.ctx(), &hidden, self.weights.action_in.bias.as_ref())?
+            };
             let mut attention_normalized = None;
             for index in 0..self.config.action_expert.depth {
+                let _layer_range = trace::range(&trace_names::action_layer(index));
                 let layer = &self.weights.action_layers[index];
                 let next_norm_modulation = if index + 1 < self.config.action_expert.depth {
                     &modulation.attention[index + 1]
@@ -477,12 +596,19 @@ pub(in crate::pi05::model) mod backbone {
             let hidden = attention_normalized.ok_or_else(|| {
                 Error::Other("π0.5 action expert must contain at least one layer".into())
             })?;
-            let velocity = gemm::bf16(self.ctx(), &hidden, &self.weights.action_out.weight)?;
-            let velocity = elementwise::bias_bf16(
-                self.ctx(),
-                &velocity,
-                self.weights.action_out.bias.as_ref(),
-            )?;
+            let velocity = {
+                let _range = trace::range(trace_names::ACTION_OUTPUT_GEMM);
+                gemm::bf16(self.ctx(), &hidden, &self.weights.action_out.weight)?
+            };
+            let velocity = {
+                let _range = trace::range(trace_names::ACTION_OUTPUT_BIAS);
+                elementwise::bias_bf16(
+                    self.ctx(),
+                    &velocity,
+                    self.weights.action_out.bias.as_ref(),
+                )?
+            };
+            let _range = trace::range(trace_names::EULER);
             elementwise::euler_update_bf16(self.ctx(), state, &velocity, dt)
         }
 
@@ -493,7 +619,7 @@ pub(in crate::pi05::model) mod backbone {
             prefix: &Bf16PrefixKvCache,
             dt: f32,
         ) -> Result<Tensor> {
-            let modulation = self.prepare_step_modulation(time_embedding)?;
+            let modulation = self.prepare_step_modulation(0, time_embedding)?;
             self.denoise_step_with_modulation(state, &modulation, prefix, dt)
         }
     }
@@ -566,6 +692,7 @@ impl crate::pi05::model::PrepareBlocks for backbone::Bf16Blocks {
         patches: &Tensor,
         layout: crate::pi05::Pi05ImageLayout,
     ) -> Result<()> {
+        let _range = trace::range(trace_names::PREPROCESS);
         crate::pi05::backend::kernels::preprocess::rgb_u8_to_patches_bf16(
             self.backend.context(),
             images,

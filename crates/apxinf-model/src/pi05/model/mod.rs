@@ -183,6 +183,7 @@ impl<B: Blocks> Pi05Model<B> {
         embeddings: &[Tensor],
         native: bool,
     ) -> Result<Tensor> {
+        let _range = crate::profiling::trace::range("pi05.infer");
         let modulation = self.blocks.eager_modulation(embeddings)?;
         let vision = self.blocks.vision(patches, native)?;
         let prefix = self.blocks.embed_prefix(&vision, ids, count)?;

@@ -25,7 +25,9 @@
 //! nsys: set `APXINF_PI05_PROFILE_REPLAY=1` to wrap exactly one steady-state
 //! graph replay in an NVTX range under the CUDA profiler API, e.g.
 //!   nsys profile --capture-range=cudaProfilerApi --capture-range-end=stop ...
-//! `APXINF_PI05_EAGER_ONLY=1` stops after the eager integrity pass, and
+//! Set `APXINF_PI05_PROFILE_EAGER=1` to profile one eager BF16 forward with
+//! stage/layer/operator ranges. `APXINF_PI05_EAGER_ONLY=1` stops after the
+//! eager integrity pass, and
 //! `APXINF_PI05_IMAGE_INPUT` mirrors `--image-input` for scripted runs.
 
 use apxinf_model::pi05::{build_bf16_model, build_fp8_static_model, build_int8_dynamic_model};
@@ -1032,6 +1034,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let eager = backend.to_cpu(&eager_output)?.to_f32_vec()?;
     drop(eager_output);
 
+    // Keeping the range opt-in prevents profiler start/stop calls from changing
+    // the normal benchmark loop. The model-level ranges remain no-op when the
+    // CUDA/NVTX feature is disabled.
+    let profile_eager = std::env::var_os("APXINF_PI05_PROFILE_EAGER").is_some();
+    if profile_eager {
+        eprintln!(
+            "profiling one eager {} forward...",
+            model_variant.variant_label()
+        );
+        apxinf_cuda::profiler::start().map_err(std::io::Error::other)?;
+        let eager_result = bench.infer(&patches, &token_ids, token_count, &noise, &time_embeddings);
+        let sync_result = backend.synchronize().map_err(std::io::Error::other);
+        let stop_result = apxinf_cuda::profiler::stop().map_err(std::io::Error::other);
+        eager_result?;
+        sync_result?;
+        stop_result?;
+    }
+
     if std::env::var_os("APXINF_PI05_EAGER_ONLY").is_some() {
         let checksum = eager.iter().map(|value| value.abs() as f64).sum::<f64>();
         println!(
@@ -1094,18 +1114,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     //
     //   nsys profile --capture-range=cudaProfilerApi --capture-range-end=stop ...
     //
-    // Keeping the range opt-in prevents profiling instrumentation from changing
-    // the normal benchmark loop while allowing a trace to contain exactly one
-    // steady-state graph replay (and none of model loading, graph construction,
-    // integrity validation, or warm-up).
+    // The CapturedGraph owns the canonical `pi05.graph_replay` range so every
+    // caller, including the Python policy path, gets the same marker.
     let profile_replay = std::env::var_os("APXINF_PI05_PROFILE_REPLAY").is_some();
     if profile_replay {
         eprintln!("profiling one steady-state CUDA graph replay...");
         apxinf_cuda::profiler::start().map_err(std::io::Error::other)?;
-        let replay_result = {
-            let _range = apxinf_cuda::nvtx::range("pi05.graph_replay");
-            graph.replay_and_synchronize()
-        };
+        let replay_result = graph.replay_and_synchronize();
         let stop_result = apxinf_cuda::profiler::stop().map_err(std::io::Error::other);
         replay_result?;
         stop_result?;
@@ -1155,6 +1170,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 "noise_bf16_u16le": args.noise_bf16_u16le,
             },
             "iterations": iterations,
+            "profile_eager": profile_eager,
             "profile_replay": profile_replay,
             "latency_ms": graph_latency,
             "workspace": {

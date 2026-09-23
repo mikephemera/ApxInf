@@ -15,6 +15,8 @@ mod math;
 mod model;
 #[cfg(feature = "cuda")]
 mod model_runner;
+#[cfg(feature = "cuda")]
+mod trace_names;
 mod weights;
 
 pub use config::{GemmaVariantConfig, ModelVariantChoice, Pi05Config, Pi05PerformanceProfile};
