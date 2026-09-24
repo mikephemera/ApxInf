@@ -14,7 +14,18 @@ def install_transformers_overlay() -> None:
     if not hasattr(transformers.utils, "LossKwargs"):
         transformers.utils.LossKwargs = TypedDict("LossKwargs", {}, total=False)
 
-    root = Path(__file__).parent / "transformers_replace" / "models"
+    # Upstream nests these one level deeper, under ``models/``.  This repository
+    # ignores every directory called ``models/`` (.gitignore), which would drop
+    # any replacement added there without a word, so the family directories sit
+    # directly under ``transformers_replace/``.  Nothing in the layout below
+    # carries meaning to Python: a module's parent comes from the dotted name
+    # handed to ``spec_from_file_location``, never from where the file lives.
+    root = Path(__file__).parent / "transformers_replace"
+    # Order is load-bearing.  ``modeling_paligemma`` imports GemmaModel and
+    # SiglipVisionModel through ``..gemma``/``..siglip``, which resolve out of
+    # ``sys.modules``.  Load paligemma first and it would bind to the *unpatched*
+    # transformers modules instead of failing -- gemma and siglip have to be in
+    # place before it runs.
     modules = (
         ("transformers.models.gemma.configuration_gemma", "gemma/configuration_gemma.py"),
         ("transformers.models.gemma.modeling_gemma", "gemma/modeling_gemma.py"),

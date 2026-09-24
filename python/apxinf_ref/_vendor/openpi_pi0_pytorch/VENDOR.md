@@ -35,6 +35,14 @@ relative.
 3. `from openpi.shared import image_tools` → `from . import image_tools`
 4. `image_tools.py` JAX functions removed; only `resize_with_pad_torch` retained.
 5. `gemma_config.py`, `pi0_config.py`: thin JAX-free dataclass shims.
+6. `transformers_replace/models/<family>/` → `transformers_replace/<family>/`: the
+   family directories were lifted one level. Upstream (and the copy procedure
+   quoted in `pi0_pytorch.py`) nests them under `models/`, but this repository
+   ignores every directory named `models/`, so a replacement added there would
+   never be committed and a fresh clone would be missing it. The overlay loads
+   each file by explicit path with an explicit dotted module name, so the
+   nesting it sits in has no meaning to Python; the family directories are what
+   map a file onto the `transformers.models.<family>` module it replaces.
 
 No semantic changes — model architecture, forward path, RMSNorm/RoPE
 math, attention masking, and flow-matching loss are byte-identical to
